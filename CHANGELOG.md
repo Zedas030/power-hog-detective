@@ -5,6 +5,8 @@
 - Redesigned web UI: status badge, key figures (open findings, power measured now, learning phase), findings as
   cards with a "Was ok" button, devices as tiles with a power bar (problems first, then by power), collapsible
   notification timeline, report chips. Light/dark, two columns on phones, reloads every minute while visible.
+- README: screenshot with demo data, new section "Web UI and HTTP API" (`/api/status`, `/api/feedback`,
+  `/health`, no login – keep the port in the LAN).
 
 ## 1.1.0 – 2026-11-05
 

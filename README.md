@@ -10,6 +10,12 @@ Learns the normal consumption pattern of every device behind a metering smart pl
 
 > Dishwasher has been running continuously for 5.0 h (configured limit 5.0 h) – forgot to switch it off?
 
+Everything at a glance in a small web UI ([more](#web-ui-and-http-api)):
+
+![Web UI with demo data](docs/web-ui.png)
+
+*Demo data, not a real household.*
+
 Notifications, web UI, reports and Home Assistant sensor states are available in **English and German** (`language: en | de`).
 
 The detective is **read-only**. It never switches a device:
@@ -28,12 +34,13 @@ The detective is **read-only**. It never switches a device:
 5. [Secrets](#secrets)
 6. [Configuration](#configuration)
 7. [Using it: notifications, "Was ok", CLI](#using-it)
-8. [Home Assistant, Prometheus, Grafana](#home-assistant-prometheus-grafana)
-9. [Monthly report](#monthly-report)
-10. [Data and SD card](#data-and-sd-card)
-11. [Tests and acceptance scenarios](#tests)
-12. [Troubleshooting](#troubleshooting)
-13. [Limits](#limits)
+8. [Web UI and HTTP API](#web-ui-and-http-api)
+9. [Home Assistant, Prometheus, Grafana](#home-assistant-prometheus-grafana)
+10. [Monthly report](#monthly-report)
+11. [Data and SD card](#data-and-sd-card)
+12. [Tests and acceptance scenarios](#tests)
+13. [Troubleshooting](#troubleshooting)
+14. [Limits](#limits)
 
 ---
 
@@ -123,7 +130,7 @@ What `docker-compose.yml` sets up:
 - Host network, so the container reaches HA and Prometheus on `127.0.0.1`.
 - Healthcheck on `/health`.
 
-Web UI: `http://<host>:8101/` shows status, open findings with a "Was ok" button, devices, recent notifications and monthly reports.
+Then open the web UI at `http://<host>:8101/`, see [Web UI and HTTP API](#web-ui-and-http-api).
 
 To update: `git pull && docker compose up -d --build`. Data and everything learned stay in `data/`.
 
@@ -212,6 +219,38 @@ What "Was ok" does:
 | `scenario compressor\|baseload\|runtime\|all [--send]` | acceptance scenarios, see below |
 | `import-statistics` | reload hourly statistics from HA |
 | `selftest` | check token and entities |
+
+## Web UI and HTTP API
+
+`http://<host>:8101/` is a dashboard for a quick look, on the desktop or the phone:
+
+- **Header:** overall status (`ok`, `learning`, `unusual`, `disconnected`) and whether Home Assistant is connected.
+- **Key figures:** open findings, power measured right now across all plugs (and how many plugs are reporting),
+  devices still in the learning phase. With a whole-house meter there is also a tile for the house.
+- **Open findings** as cards with the device name and a **"Was ok"** button.
+- **Devices** as tiles with live power, a bar relative to the strongest device and their state
+  (`normal`, `learning n/14`, `unusual`, `no data`). Problems come first, then the devices by power.
+- **Recent notifications** as a timeline: the latest 6, up to 30 more on click.
+- **Monthly reports** as links.
+
+The page follows the light/dark setting of the system, uses two columns on phones and reloads every minute while
+the tab is visible. It loads nothing from the internet.
+
+**HTTP endpoints** (same port):
+
+| Path | Purpose |
+|---|---|
+| `GET /` | the dashboard above |
+| `GET /reports/report-YYYY-MM.html` | a monthly report |
+| `GET /api/status` | JSON: `status`, learning progress per device, open findings with `id`, `device`, `message`, `state` |
+| `POST /api/feedback` | "Was ok" from your own tools: JSON `{"target": "<finding id or device>"}`, answers `{"accepted": [ids]}` |
+| `GET /metrics` | Prometheus metrics, see below |
+| `GET /health` | JSON `ok`, `ha_connected`, `version`, `uptime_s` (used by the Docker healthcheck) |
+
+Example: `curl -X POST -H 'Content-Type: application/json' -d '{"target": "TV"}' http://<host>:8101/api/feedback`
+
+**There is no login.** Anyone who reaches the port can see the devices and press "Was ok". Keep port 8101 inside
+your LAN or VPN and do not forward it on the router.
 
 ## Home Assistant, Prometheus, Grafana
 

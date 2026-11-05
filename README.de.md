@@ -10,6 +10,12 @@ Der Detektiv lernt für jedes Gerät an einer Messsteckdose in Home Assistant da
 
 > Spülmaschine läuft seit 5,0 Std. ununterbrochen (eingestellte Grenze 5,0 Std.) – vergessen auszuschalten?
 
+Alles auf einen Blick in einer kleinen Weboberfläche ([mehr](#weboberfläche-und-http-api)):
+
+![Weboberfläche mit Demodaten](docs/web-ui.de.png)
+
+*Demodaten, kein echter Haushalt.*
+
 Meldungen, Weboberfläche, Berichte und die Zustände der HA-Sensoren gibt es auf **Deutsch und Englisch**. Für Deutsch stellt man in der Konfiguration `language: de` ein; Standard ist Englisch.
 
 Der Detektiv **liest nur**. Er schaltet keine Geräte:
@@ -28,12 +34,13 @@ Der Detektiv **liest nur**. Er schaltet keine Geräte:
 5. [Secrets](#secrets)
 6. [Konfiguration](#konfiguration)
 7. [Bedienung: Meldungen, „War ok“, CLI](#bedienung)
-8. [Home Assistant, Prometheus, Grafana](#home-assistant-prometheus-grafana)
-9. [Monatsbericht](#monatsbericht)
-10. [Daten und SD-Karte](#daten-und-sd-karte)
-11. [Tests und Abnahme-Szenarien](#tests)
-12. [Fehlersuche](#fehlersuche)
-13. [Grenzen](#grenzen)
+8. [Weboberfläche und HTTP-API](#weboberfläche-und-http-api)
+9. [Home Assistant, Prometheus, Grafana](#home-assistant-prometheus-grafana)
+10. [Monatsbericht](#monatsbericht)
+11. [Daten und SD-Karte](#daten-und-sd-karte)
+12. [Tests und Abnahme-Szenarien](#tests)
+13. [Fehlersuche](#fehlersuche)
+14. [Grenzen](#grenzen)
 
 ---
 
@@ -123,7 +130,7 @@ Was die `docker-compose.yml` festlegt:
 - Host-Netz, damit der Container HA und Prometheus unter `127.0.0.1` erreicht.
 - Healthcheck auf `/health`.
 
-Weboberfläche: `http://<host>:8101/` zeigt Status, offene Auffälligkeiten mit Knopf „War ok“, Geräte, letzte Meldungen und Monatsberichte.
+Danach die Weboberfläche unter `http://<host>:8101/` öffnen, siehe [Weboberfläche und HTTP-API](#weboberfläche-und-http-api).
 
 Update: `git pull && docker compose up -d --build`. Daten und Gelerntes bleiben in `data/`.
 
@@ -211,6 +218,38 @@ Was „War ok“ bewirkt:
 | `scenario compressor\|baseload\|runtime\|all [--send]` | Abnahme-Szenarien, siehe unten |
 | `import-statistics` | HA-Stundenstatistik nachladen |
 | `selftest` | Token und Entitäten prüfen |
+
+## Weboberfläche und HTTP-API
+
+`http://<host>:8101/` ist eine Übersicht für den schnellen Blick, am Rechner oder auf dem Handy:
+
+- **Kopf:** Gesamtstatus (`ok`, `lernt`, `auffällig`, `keine Verbindung`) und ob Home Assistant verbunden ist.
+- **Kennzahlen:** offene Auffälligkeiten, gerade gemessene Leistung über alle Steckdosen (und wie viele davon
+  melden), Geräte in der Lernphase. Mit Hauszähler kommt eine Kachel für das Haus dazu.
+- **Offene Auffälligkeiten** als Karten mit Gerätename und Knopf **„War ok“**.
+- **Geräte** als Kacheln mit aktueller Leistung, einem Balken im Vergleich zum stärksten Gerät und dem Zustand
+  (`normal`, `lernt n/14`, `auffällig`, `keine Daten`). Probleme stehen oben, danach geht es nach Leistung.
+- **Letzte Meldungen** als Zeitleiste: die neuesten 6, bis zu 30 weitere zum Aufklappen.
+- **Monatsberichte** als Links.
+
+Die Seite folgt der Hell/Dunkel-Einstellung des Systems, zeigt auf dem Handy zwei Spalten und lädt sich jede
+Minute neu, solange der Tab sichtbar ist. Sie lädt nichts aus dem Internet.
+
+**HTTP-Endpunkte** (gleicher Port):
+
+| Pfad | Zweck |
+|---|---|
+| `GET /` | die Übersicht oben |
+| `GET /berichte/bericht-JJJJ-MM.html` | ein Monatsbericht (auch unter `/reports/…`) |
+| `GET /api/status` | JSON: `status`, Lernstand je Gerät, offene Auffälligkeiten mit `id`, `device`, `message`, `state`; bei `language: de` zusätzlich die deutschen Schlüssel `lernfortschritt` und `offen` |
+| `POST /api/feedback` | „War ok“ aus eigenen Werkzeugen: JSON `{"target": "<ID oder Gerät>"}`, Antwort `{"accepted": [IDs]}` |
+| `GET /metrics` | Prometheus-Metriken, siehe unten |
+| `GET /health` | JSON `ok`, `ha_connected`, `version`, `uptime_s` (für den Docker-Healthcheck) |
+
+Beispiel: `curl -X POST -H 'Content-Type: application/json' -d '{"target": "TV"}' http://<host>:8101/api/feedback`
+
+**Es gibt keine Anmeldung.** Wer den Port erreicht, sieht die Geräte und kann „War ok“ drücken. Port 8101 im
+LAN oder VPN lassen und nicht am Router freigeben.
 
 ## Home Assistant, Prometheus, Grafana
 
