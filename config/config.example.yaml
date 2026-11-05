@@ -1,0 +1,180 @@
+# =====================================================================================
+#  Stromfresser-Detektiv – Konfiguration
+#  Nach Änderungen:  docker compose restart   (im Ordner /opt/stromfresser-detektiv)
+#  Dauern: 90s, 15m, 3h, 2d   ·   Der HA-Token steht NICHT hier, sondern in ../.env
+# =====================================================================================
+
+home_assistant:
+  url: http://127.0.0.1:8123            # Container läuft im Host-Netz des Pi
+  notify: notify.mobile_app_phone      # Meldungen + Monats-Kurzfassung (Handy, mit Knopf „War ok“)
+  zusaetzlich_persistent: false         # true = zusätzlich als Glocke in der HA-Oberfläche
+  sensor_praefix: stromfresser          # eigene Sensoren heißen sensor.stromfresser_*
+
+prometheus:
+  url: http://127.0.0.1:9090            # nur fürs Vorlernen aus der Vergangenheit (35 Tage, 15 s)
+
+web:
+  port: 8101                            # Weboberfläche, /metrics, /health
+  adresse: 192.0.2.10              # nur für Links in Meldungen
+
+zeitzone: Europe/Berlin
+
+preise:
+  bezug_eur_kwh: 0.34                   # Strompreis (Arbeitspreis)
+  einspeisung_eur_kwh: 0.00             # Einspeisevergütung
+
+lernen:
+  min_tage: 14                          # erst danach wird verglichen und gemeldet
+  fenster_tage: 28                      # gleitendes Lernfenster: langsame Änderungen wandern ins Normal
+  max_ausschluss_tage: 14               # hält eine Abweichung so lange an, wird sie automatisch als neues Normal gelernt
+  min_tage_nach_feedback: 3             # nach „War ok“: so viele Tage neues Normal, bevor wieder verglichen wird
+  vorlernen_tage: 35                    # wie weit `stromfresser vorlernen` zurückschaut
+
+erkennung:
+  stabil_tage: 3                        # Rauschunterdrückung: Meldung erst nach so vielen Tagen stabiler Abweichung
+  rel_schwelle: 0.25                    # mindestens 25 % Abweichung vom gelernten Normal …
+  z_schwelle: 3.0                       # … und mindestens 3 robuste Standardabweichungen
+  normal_tage_bis_entwarnung: 2         # so viele normale Tage, bis eine Auffälligkeit als erledigt gilt
+  entwarnung_melden: true               # „… ist wieder normal“ melden
+  programm_abweichung: 0.3              # Programm-Geräte: Lauf 30 % länger / mehr Energie als das gelernte Programm
+  programm_stabil_laeufe: 2             # … in mindestens 2 der letzten 3 Läufe
+
+ueberwachung:                           # Selbstüberwachung
+  keine_daten_nach: 30m                 # Steckdose liefert keine frischen Werte mehr (nur in der Weboberfläche) …
+  keine_daten_melden: false             # … true = auch per Push (stört bei selten genutzten Geräten)
+  nicht_verfuegbar_nach: 30m            # Push, wenn die Steckdose so lange „unavailable“/„unknown“ ist (Verbindung weg)
+  ha_weg_nach: 5m                       # Home Assistant nicht erreichbar (Meldung kommt nach der Rückkehr)
+  hausdaten_weg_nach: 30m               # Growatt-Hausdaten fehlen
+  abfrageintervall: 60s                 # zusätzlich zur Live-Verbindung: Abfrage aller Entitäten
+  registry_pruefung: 10m                # Umbenennung/Fehlen von Entitäten erkennen
+
+speicher:
+  pfad: /data/stromfresser.sqlite
+  schreibintervall: 60s                 # Messwerte gesammelt schreiben (schont die SD-Karte)
+  rohdaten_tage: 14                     # Rohwerte (alle Messpunkte)
+  minutenwerte_tage: 90                 # danach Minutenmittel
+  viertelstunden_tage: 730              # danach Viertelstundenmittel; Stundenenergie, Tagesmerkmale und Läufe bleiben dauerhaft
+
+bericht:
+  tag: 1                                # Monatsbericht am 1. des Monats …
+  uhrzeit: "07:00"                      # … um 07:00 (HTML in der Weboberfläche + Kurzfassung per notify)
+  verzeichnis: /data/berichte
+  kuehlschrank_referenz_kwh_jahr: 150   # Vergleichswert für ein effizientes Kühlgerät
+  durchlauferhitzer_ersparnis_anteil: 0.3   # Annahme Sparduschkopf
+  grundlast_sparanteil: 0.3             # Annahme: so viel der nicht zugeordneten Grundlast ist vermeidbar
+  hinweise: []                          # eigene Hinweise, die in jedem Bericht stehen sollen
+
+haus:
+  # Echter Hauszähler (Leistung in W). Hausverbrauch ist Pflicht, Netzbezug/Einspeisung optional.
+  # Stand 05.11.2026: In Home Assistant gibt es keinen. Die Growatt-Server-Integration liefert für
+  # Last, Netzbezug, Einspeisung und Batterie nur 0 W (geprüft April–November). Sobald z. B. ein
+  # IR-Lesekopf am Stromzähler oder ein Shelly 3EM in HA ist, hier eintragen und neu starten:
+  # Dann laufen nächtliche Grundlast, nicht zugeordnete Last, Solar/Netz-Anteil und Durchlauferhitzer.
+  hausverbrauch:                        # z. B. sensor.stromzaehler_leistung
+  netzbezug:                            # z. B. sensor.stromzaehler_bezug_leistung
+  einspeisung:                          # z. B. sensor.stromzaehler_einspeisung_leistung
+  solar_ins_haus:                       # Leistung, die PV/Batterie ins Haus speisen (Solar-Anteil im Bericht;
+    - sensor.noah_2000_output_power     # ohne Hauszähler als Schätzung). Zweiter NOAH hier ergänzen, sobald er Werte liefert.
+  nacht_von: "01:00"                    # Fenster für die nächtliche Grundlast
+  nacht_bis: "05:00"
+  durchlauferhitzer:                    # nicht in HA: wird aus großen, keiner Steckdose zuzuordnenden Lastspitzen geschätzt
+    aktiv: true
+    name: Durchlauferhitzer Bad
+    schwelle_w: 3000
+
+# -------------------------------------------------------------------------------------
+# Geräte. typ: zyklus | dauerlast | programm | nutzung | ladegeraet | zeitplan
+# Optional je Gerät:
+#   max_laufzeit: 4h          Meldung, wenn das Gerät länger am Stück läuft (Bügeleisen-Fall);
+#                             ohne Angabe wird die Grenze gelernt (zyklus, programm, nutzung, zeitplan)
+#   auto_laufzeit: false      gelernte Laufzeitgrenze abschalten
+#   null_meldung_nach: 30m    Meldung, wenn das Gerät trotz eingeschalteter Steckdose 0 W zieht
+#                             (Standard: dauerlast 15m, zyklus gelernt, sonst aus)
+#   an_schwelle_w: 15         ab dieser Leistung gilt das Gerät als „läuft“
+#   profil: kuehlgeraet | boiler | spuelmaschine | waschmaschine | trockner | drucker   (für passende Tipps)
+#   programme_pruefen: false  Programm-Erkennung abschalten (z. B. 3D-Drucker: jeder Druck ist anders)
+#   verlauf: [...]            alte Entitäts-IDs (vor einer Umbenennung) fürs Vorlernen aus Prometheus
+#   aktiv: false              Gerät vorübergehend ignorieren
+# -------------------------------------------------------------------------------------
+geraete:
+  kuehlschrank:
+    name: Kühlschrank
+    typ: zyklus
+    profil: kuehlgeraet
+    leistung: sensor.kuhlschrank_derzeitiger_verbrauch
+    schalter: switch.kuhlschrank
+    verlauf:
+      - {entity: sensor.kuhlschrank_derzeitiger_verbrauch_2}
+  kueche_boiler:
+    name: Küche Boiler
+    typ: zyklus
+    profil: boiler
+    leistung: sensor.kuche_boiler_derzeitiger_verbrauch
+    schalter: switch.kuche_boiler
+    an_schwelle_w: 50
+  router:
+    name: Router
+    typ: dauerlast
+    leistung: sensor.router_derzeitiger_verbrauch
+    schalter: switch.router
+  raspi:
+    name: Raspberry Pi
+    typ: dauerlast
+    leistung: sensor.1_derzeitiger_verbrauch
+    schalter: switch.1
+  luftreiniger:
+    name: Luftreiniger
+    typ: dauerlast
+    leistung: sensor.luftreiniger_derzeitiger_verbrauch
+    schalter: switch.luftreiniger
+  spuelmaschine:
+    name: Spülmaschine
+    typ: programm
+    profil: spuelmaschine
+    leistung: sensor.spulmaschine_derzeitiger_verbrauch
+    schalter: switch.spulmaschine
+    max_laufzeit: 5h
+  drucker_3d:
+    name: 3D-Drucker
+    typ: programm
+    profil: drucker
+    programme_pruefen: false
+    auto_laufzeit: false
+    max_laufzeit: 30h
+    leistung: sensor.drucker_3d_derzeitiger_verbrauch
+    schalter: switch.drucker_3d
+    verlauf:
+      - {entity: sensor.tent_derzeitiger_verbrauch}
+  pc:
+    name: PC
+    typ: nutzung
+    an_schwelle_w: 25
+    leistung: sensor.pc_derzeitiger_verbrauch
+    schalter: switch.pc
+  tv:
+    name: TV
+    typ: nutzung
+    leistung: sensor.tv_derzeitiger_verbrauch
+    schalter: switch.tv
+  tv_schlafzimmer:
+    name: TV Schlafzimmer
+    typ: nutzung
+    leistung: sensor.tv_schlafzimmer_derzeitiger_verbrauch
+    schalter: switch.tv_schlafzimmer
+    verlauf:
+      - {entity: sensor.waschmaschine_derzeitiger_verbrauch, friendly_name: "TV Schlafzimmer Derzeitiger Verbrauch"}
+  ipad_station:
+    name: iPad-Station
+    typ: ladegeraet
+    leistung: sensor.ipad_station_derzeitiger_verbrauch
+    schalter: switch.ipad_station
+    verlauf:
+      - {entity: sensor.staubsauger_derzeitiger_verbrauch, friendly_name: "Steckdose IPad Derzeitiger Verbrauch"}
+  zelt:
+    name: Zelt
+    typ: zeitplan
+    an_schwelle_w: 150                  # Lüfter läuft immer (~77 W), „an“ = Lampe
+    leistung: sensor.zelt_derzeitiger_verbrauch
+    schalter: switch.zelt
+    verlauf:
+      - {entity: sensor.kuhlschrank_derzeitiger_verbrauch, friendly_name: "Zelt Derzeitiger Verbrauch"}

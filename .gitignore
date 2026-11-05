@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+config/config.yaml
+config/.env
+data/
+*.sqlite*
+docs/abnahme/

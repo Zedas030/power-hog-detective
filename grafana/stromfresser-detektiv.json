@@ -1,0 +1,535 @@
+{
+ "uid": "stromfresser-detektiv",
+ "title": "Stromfresser-Detektiv",
+ "tags": [
+  "energie",
+  "stromfresser"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "1m",
+ "time": {
+  "from": "now-2d",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "datasource",
+    "type": "datasource",
+    "query": "prometheus",
+    "label": "Datenquelle",
+    "current": {},
+    "hide": 0
+   },
+   {
+    "name": "device",
+    "type": "query",
+    "label": "Gerät",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "${datasource}"
+    },
+    "query": {
+     "query": "label_values(sfd_feature_value, device)",
+     "refId": "A"
+    },
+    "definition": "label_values(sfd_feature_value, device)",
+    "refresh": 2,
+    "current": {}
+   },
+   {
+    "name": "metric",
+    "type": "query",
+    "label": "Merkmal",
+    "datasource": {
+     "type": "prometheus",
+     "uid": "${datasource}"
+    },
+    "query": {
+     "query": "label_values(sfd_feature_value{device=\"$device\"}, metric)",
+     "refId": "B"
+    },
+    "definition": "label_values(sfd_feature_value{device=\"$device\"}, metric)",
+    "refresh": 2,
+    "current": {}
+   }
+  ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "stat",
+   "title": "Offene Auffälligkeiten",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sum(sfd_anomalies_open)",
+     "legendFormat": "offen",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "Home Assistant verbunden",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_ha_connected",
+     "legendFormat": "HA",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "getrennt",
+         "color": "red"
+        },
+        "1": {
+         "text": "verbunden",
+         "color": "green"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "Nächtliche Grundlast (gestern)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_house_night_base_watts",
+     "legendFormat": "Haus",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "watt"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "davon ohne Messsteckdose",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_house_unassigned_night_watts",
+     "legendFormat": "nicht zugeordnet",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "watt"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 5,
+   "type": "stat",
+   "title": "Meldungen in Warteschlange",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_outbox_pending",
+     "legendFormat": "wartend",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 6,
+   "type": "stat",
+   "title": "Datenbank",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_db_size_bytes",
+     "legendFormat": "SQLite",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "Leistung je Gerät",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 24,
+    "h": 9
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_device_power_watts",
+     "legendFormat": "{{name}}",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "fillOpacity": 8,
+      "lineWidth": 1
+     }
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "Merkmal und gelerntes Normal: $device / $metric",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 13,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_feature_value{device=\"$device\",metric=\"$metric\"}",
+     "legendFormat": "gestern",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_feature_baseline{device=\"$device\",metric=\"$metric\"}",
+     "legendFormat": "gelerntes Normal",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {},
+   "description": "Tagesmerkmal (z. B. Zyklusdauer in Minuten) gegen den Median im gleitenden Lernfenster"
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Grundlast nachts",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 13,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_house_night_base_watts",
+     "legendFormat": "Haus gesamt",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_house_unassigned_night_watts",
+     "legendFormat": "keiner Steckdose zuzuordnen",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "watt"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 10,
+   "type": "bargauge",
+   "title": "Lernfortschritt (Tage)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 21,
+    "w": 8,
+    "h": 9
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_learning_days",
+     "legendFormat": "{{name}}",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "min": 0,
+     "max": 14
+    },
+    "overrides": []
+   },
+   "options": {
+    "orientation": "horizontal",
+    "displayMode": "gradient"
+   }
+  },
+  {
+   "id": 11,
+   "type": "bargauge",
+   "title": "Alter des letzten Messwerts",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 21,
+    "w": 8,
+    "h": 9
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_device_last_value_age_seconds",
+     "legendFormat": "{{name}}",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 600
+       },
+       {
+        "color": "red",
+        "value": 1800
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "orientation": "horizontal",
+    "displayMode": "basic"
+   }
+  },
+  {
+   "id": 12,
+   "type": "bargauge",
+   "title": "Offene Auffälligkeiten je Gerät",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 21,
+    "w": 8,
+    "h": 9
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "${datasource}"
+     },
+     "expr": "sfd_anomalies_open",
+     "legendFormat": "{{name}}",
+     "refId": "A",
+     "instant": true
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "orientation": "horizontal",
+    "displayMode": "basic"
+   }
+  }
+ ]
+}

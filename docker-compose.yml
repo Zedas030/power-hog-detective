@@ -1,0 +1,33 @@
+# Stromfresser-Detektiv – start: docker compose up -d --build
+services:
+  stromfresser-detektiv:
+    build:
+      context: .
+      target: app
+    image: stromfresser-detektiv:1.0.0
+    container_name: stromfresser-detektiv
+    restart: unless-stopped            # autostart after reboot
+    network_mode: host                 # reaches HA (127.0.0.1:8123) and Prometheus; web UI on port 8101
+    env_file: .env                     # HA_TOKEN (chmod 600)
+    environment:
+      TZ: Europe/Berlin
+      SFD_CONFIG: /config/config.yaml
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
