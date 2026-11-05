@@ -7,18 +7,31 @@ from pathlib import Path
 
 import yaml
 
+from .i18n import L, lang, set_lang
 from .util import parse_duration
 
 TYPES = ("zyklus", "dauerlast", "programm", "nutzung", "ladegeraet", "zeitplan")
 
-TYPE_LABEL = {
-    "zyklus": "Zyklus-Gerät",
-    "dauerlast": "Dauerlast-Gerät",
-    "programm": "Programm-Gerät",
-    "nutzung": "Nutzungsgerät",
-    "ladegeraet": "Ladegerät",
-    "zeitplan": "Zeitplan-Gerät",
+_TYPE_LABELS = {
+    "zyklus": ("Cycle device", "Zyklus-Gerät"),
+    "dauerlast": ("Continuous load", "Dauerlast-Gerät"),
+    "programm": ("Program device", "Programm-Gerät"),
+    "nutzung": ("Usage device", "Nutzungsgerät"),
+    "ladegeraet": ("Charger", "Ladegerät"),
+    "zeitplan": ("Schedule device", "Zeitplan-Gerät"),
 }
+
+
+class _TypeLabel(dict):
+    def __getitem__(self, k):
+        en, de = _TYPE_LABELS[k]
+        return L(en, de)
+
+    def get(self, k, default=None):
+        return self[k] if k in _TYPE_LABELS else default
+
+
+TYPE_LABEL = _TypeLabel()
 
 # Per type: on-threshold (W), gap that still belongs to the same run, minimum run length,
 # metrics evaluated daily, whether a learned runtime limit applies, default "zero power" alarm.
@@ -108,6 +121,9 @@ class Config:
     fridge_reference_kwh: float
     dle_saving_share: float
     sensor_prefix: str
+    language: str
+    app_name: str
+    short_name: str
     house: House
     devices: dict[str, Device]
     raw: dict = field(default_factory=dict)
@@ -131,6 +147,53 @@ class Config:
         return {d.schalter: d.key for d in self.devices.values() if d.aktiv and d.schalter}
 
 
+# English config keys (primary) -> internal (German) keys. German keys keep working.
+KEY_ALIASES = {
+    "devices": "geraete", "name": "name", "type": "typ", "power": "leistung", "switch": "schalter",
+    "on_threshold_w": "an_schwelle_w", "merge_gap": "luecke", "min_run": "min_lauf", "max_runtime": "max_laufzeit",
+    "learn_runtime": "auto_laufzeit", "zero_alert_after": "null_meldung_nach", "history": "verlauf", "hint": "hinweis",
+    "enabled": "aktiv", "profile": "profil", "detect_programs": "programme_pruefen", "liveness": "lebenszeichen",
+    "prices": "preise", "import_eur_kwh": "bezug_eur_kwh", "export_eur_kwh": "einspeisung_eur_kwh",
+    "learning": "lernen", "min_days": "min_tage", "window_days": "fenster_tage",
+    "max_excluded_days": "max_ausschluss_tage", "min_days_after_feedback": "min_tage_nach_feedback",
+    "prelearn_days": "vorlernen_tage",
+    "detection": "erkennung", "stable_days": "stabil_tage", "rel_threshold": "rel_schwelle", "z_threshold": "z_schwelle",
+    "normal_days_to_clear": "normal_tage_bis_entwarnung", "notify_recovery": "entwarnung_melden",
+    "program_deviation": "programm_abweichung", "program_stable_runs": "programm_stabil_laeufe",
+    "monitoring": "ueberwachung", "no_data_after": "keine_daten_nach", "notify_no_data": "keine_daten_melden",
+    "unavailable_after": "nicht_verfuegbar_nach", "ha_down_after": "ha_weg_nach",
+    "house_data_missing_after": "hausdaten_weg_nach", "poll_interval": "abfrageintervall",
+    "registry_check": "registry_pruefung",
+    "storage": "speicher", "path": "pfad", "write_interval": "schreibintervall", "raw_days": "rohdaten_tage",
+    "minute_days": "minutenwerte_tage", "quarter_hour_days": "viertelstunden_tage",
+    "report": "bericht", "day": "tag", "time": "uhrzeit", "directory": "verzeichnis",
+    "fridge_reference_kwh_year": "kuehlschrank_referenz_kwh_jahr",
+    "water_heater_saving_share": "durchlauferhitzer_ersparnis_anteil", "base_load_saving_share": "grundlast_sparanteil",
+    "notes": "hinweise",
+    "house": "haus", "consumption": "hausverbrauch", "grid_import": "netzbezug", "grid_export": "einspeisung",
+    "solar_into_house": "solar_ins_haus", "night_from": "nacht_von", "night_to": "nacht_bis",
+    "water_heater": "durchlauferhitzer", "threshold_w": "schwelle_w",
+    "additional_persistent": "zusaetzlich_persistent", "sensor_prefix": "sensor_praefix", "address": "adresse",
+    "timezone": "zeitzone",
+}
+TYPE_ALIASES = {"cycle": "zyklus", "continuous": "dauerlast", "program": "programm", "usage": "nutzung",
+                "charger": "ladegeraet", "schedule": "zeitplan"}
+TYPE_EN = {v: k for k, v in TYPE_ALIASES.items()}
+
+
+def _normalize(obj, in_devices=False):
+    """Rename English keys to the internal ones, recursively (device keys themselves stay untouched)."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            nk = k if in_devices else KEY_ALIASES.get(k, k)
+            out[nk] = _normalize(v, in_devices=(nk == "geraete"))
+        return out
+    if isinstance(obj, list):
+        return [_normalize(x) for x in obj]
+    return obj
+
+
 def _hm(s: str) -> int:
     h, m = str(s).split(":")
     return int(h) * 60 + int(m)
@@ -151,19 +214,21 @@ def load_config(path: str | os.PathLike, env_path: str | os.PathLike | None = No
                 require_token: bool = True) -> Config:
     load_env(env_path)
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    raw = _normalize(raw)
+    set_lang(raw.get("language") or raw.get("sprache") or "en")
     g = lambda *keys, default=None: _get(raw, keys, default)  # noqa: E731
 
     token = os.environ.get("HA_TOKEN", "")
     if require_token and not token:
-        raise SystemExit("HA_TOKEN fehlt: bitte in der .env eintragen (siehe README, Abschnitt 'Secrets').")
+        raise SystemExit("HA_TOKEN missing: put it into .env (see README, section 'Secrets').")
 
     devices = {}
     for key, d in (raw.get("geraete") or {}).items():
-        typ = d.get("typ")
+        typ = TYPE_ALIASES.get(d.get("typ"), d.get("typ"))
         if typ not in TYPES:
-            raise SystemExit(f"Gerät {key}: typ muss einer von {', '.join(TYPES)} sein, nicht {typ!r}")
+            raise SystemExit(f"device {key}: type must be one of {', '.join(TYPE_ALIASES)}, not {typ!r}")
         if not d.get("leistung"):
-            raise SystemExit(f"Gerät {key}: 'leistung' (Leistungs-Entität in W) fehlt")
+            raise SystemExit(f"device {key}: 'power' (power entity in W) is missing")
         td = TYPE_DEFAULTS[typ]
         devices[key] = Device(
             key=key,
@@ -195,7 +260,7 @@ def load_config(path: str | os.PathLike, env_path: str | os.PathLike | None = No
         nacht_bis=_hm(h.get("nacht_bis", "05:00")),
         dle_aktiv=bool(dle.get("aktiv", True)),
         dle_schwelle_w=float(dle.get("schwelle_w", 3000)),
-        dle_name=dle.get("name", "Durchlauferhitzer"),
+        dle_name=dle.get("name") or L("Water heater", "Durchlauferhitzer"),
         verlauf=dict(h.get("verlauf") or {}),
         solar=[x for x in (h.get("solar_ins_haus") or []) if x],
     )
@@ -230,17 +295,20 @@ def load_config(path: str | os.PathLike, env_path: str | os.PathLike | None = No
         house_stale_after=parse_duration(g("ueberwachung", "hausdaten_weg_nach", default="30m")),
         poll_interval=parse_duration(g("ueberwachung", "abfrageintervall", default="60s")),
         registry_interval=parse_duration(g("ueberwachung", "registry_pruefung", default="10m")),
-        db_path=g("speicher", "pfad", default="/data/stromfresser.sqlite"),
+        db_path=g("speicher", "pfad", default="/data/power-hog.sqlite"),
         flush_interval=parse_duration(g("speicher", "schreibintervall", default="60s")),
         raw_days=int(g("speicher", "rohdaten_tage", default=14)),
         minute_days=int(g("speicher", "minutenwerte_tage", default=90)),
         quarter_days=int(g("speicher", "viertelstunden_tage", default=730)),
         report_day=int(g("bericht", "tag", default=1)),
         report_time=(int(rt[0]), int(rt[1])),
-        report_dir=g("bericht", "verzeichnis", default="/data/berichte"),
+        report_dir=g("bericht", "verzeichnis", default="/data/reports"),
         fridge_reference_kwh=float(g("bericht", "kuehlschrank_referenz_kwh_jahr", default=150)),
         dle_saving_share=float(g("bericht", "durchlauferhitzer_ersparnis_anteil", default=0.3)),
-        sensor_prefix=g("home_assistant", "sensor_praefix", default="stromfresser"),
+        sensor_prefix=g("home_assistant", "sensor_praefix", default="power_hog"),
+        language=lang(),
+        app_name=g("app_name", default=None) or L("Power Hog Detective", "Stromfresser-Detektiv"),
+        short_name=g("short_name", default=None) or L("Power Hog", "Stromfresser"),
         house=house,
         devices=devices,
         raw=raw,

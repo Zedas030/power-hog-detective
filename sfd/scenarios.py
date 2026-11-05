@@ -12,7 +12,8 @@ from .explain import profile_for
 from .features import _value_at
 from .segment import steps
 from .store import Store
-from .util import Clock, fmt_num, median
+from .i18n import L, fmt_num
+from .util import Clock, median
 
 
 def _copy_store(src: Store) -> tuple[Store, str]:
@@ -72,7 +73,8 @@ def scenario_compressor(cfg, real_store, notifier=None, device: str | None = Non
     peak, _ = _learned(st, key, "spitze_w", lab.last_real)
     standby, _ = _learned(st, key, "standby_w", lab.last_real)
     if not cyc or not pause:
-        raise SystemExit(f"{d.name}: noch keine gelernten Zyklen – erst vorlernen.")
+        raise SystemExit(L(f"{d.name}: no learned cycles yet – run prelearn first.",
+                          f"{d.name}: noch keine gelernten Zyklen – erst vorlernen."))
     lab.wipe_from(key, lab.today)
     s = clock.day_bounds(lab.today)[0]
     e = clock.day_bounds(lab.today + timedelta(days=n_days - 1))[1]
@@ -86,13 +88,15 @@ def scenario_compressor(cfg, real_store, notifier=None, device: str | None = Non
         before = len(lab.messages)
         det.evaluate_day(day, only={key})
         f = st.daily_day(key, day.isoformat())
-        days_out.append({"tag": day.isoformat(), "zyklus_min": f.get("zyklus_min"), "pause_min": f.get("pause_min"),
-                         "meldung": [m["message"] for m in lab.messages[before:]]})
-    res = {"szenario": "Längere Kompressorzyklen", "geraet": d.name, "gelernt_aus_tagen": n,
-           "gelernt": {"zyklus_min": cyc, "pause_min": pause, "spitze_w": peak},
-           "eingespielt": f"Zyklen {fmt_num(factor * 100 - 100)} % länger ({fmt_num(cyc * factor, 1)} statt "
-                          f"{fmt_num(cyc, 1)} Min.), Pausen unverändert, {n_days} Tage",
-           "tage": days_out, "meldungen": lab.messages}
+        days_out.append({"day": day.isoformat(), "zyklus_min": f.get("zyklus_min"), "pause_min": f.get("pause_min"),
+                         "messages": [m["message"] for m in lab.messages[before:]]})
+    res = {"scenario": L("Longer compressor cycles", "Längere Kompressorzyklen"), "device": d.name,
+           "learned_from_days": n, "learned": {"zyklus_min": cyc, "pause_min": pause, "spitze_w": peak},
+           "injected": L(f"cycles {fmt_num(factor * 100 - 100)} % longer ({fmt_num(cyc * factor, 1)} instead of "
+                         f"{fmt_num(cyc, 1)} min), pauses unchanged, {n_days} days",
+                         f"Zyklen {fmt_num(factor * 100 - 100)} % länger ({fmt_num(cyc * factor, 1)} statt "
+                         f"{fmt_num(cyc, 1)} Min.), Pausen unverändert, {n_days} Tage"),
+           "days": days_out, "messages": lab.messages}
     # feedback in the sandbox: 'war ok' -> the new cycle length is learned, no further alarm
     if lab.messages:
         n0 = len(lab.messages)
@@ -106,8 +110,8 @@ def scenario_compressor(cfg, real_store, notifier=None, device: str | None = Non
             clock.set(clock.at(day + timedelta(days=1), 0, 20))
             det.process_day(day, house=False, aggregates=False)
             det.evaluate_day(day, only={key})
-        res["nach_feedback"] = {"bestaetigung": lab.messages[n0]["message"] if len(lab.messages) > n0 else None,
-                                "weitere_meldungen_5_tage": [m["message"] for m in lab.messages[n0 + 1:]]}
+        res["after_feedback"] = {"confirmation": lab.messages[n0]["message"] if len(lab.messages) > n0 else None,
+                                 "further_messages_5_days": [m["message"] for m in lab.messages[n0 + 1:]]}
     lab.close()
     return res
 
@@ -159,20 +163,22 @@ def scenario_baseload(cfg, real_store, notifier=None, extra_w: float = 35.0, n_d
         det.evaluate_day(day, only={HOUSE})
         f = st.daily_day(HOUSE, day.isoformat())
         if i >= learn_days - 2:
-            out_days.append({"tag": day.isoformat(), "phase": "Störung" if extra else "normal",
+            out_days.append({"day": day.isoformat(), "phase": L("fault", "Störung") if extra else "normal",
                              "nacht_w": f.get("nacht_w"), "steckdosen_nacht_w": f.get("steckdosen_nacht_w"),
                              "unzugeordnet_nacht_w": f.get("unzugeordnet_nacht_w"),
-                             "meldung": [m["message"] for m in lab.messages[before:]]})
+                             "messages": [m["message"] for m in lab.messages[before:]]})
     det.silent = False
     learned = st.daily(HOUSE, "unzugeordnet_nacht_w", first.isoformat(),
                        (first + timedelta(days=learn_days - 1)).isoformat())
-    res = {"szenario": "Gestiegene nächtliche Grundlast",
-           "hinweis": "Hauszähler simuliert (in HA gibt es keinen echten), Steckdosen = echte Verläufe",
-           "gelernt_aus_tagen": len(learned),
-           "gelernt": {"unzugeordnet_nacht_w": median([v for _, v in learned])},
-           "eingespielt": f"+{fmt_num(extra_w)} W Dauerlast ohne Messsteckdose ab "
-                          f"{(first + timedelta(days=learn_days)).isoformat()}",
-           "tage": out_days, "meldungen": lab.messages}
+    start = (first + timedelta(days=learn_days)).isoformat()
+    res = {"scenario": L("Higher night base load", "Gestiegene nächtliche Grundlast"),
+           "note": L("house meter simulated on top of the real plug curves",
+                     "Hauszähler simuliert, Steckdosen = echte Verläufe"),
+           "learned_from_days": len(learned),
+           "learned": {"unzugeordnet_nacht_w": median([v for _, v in learned])},
+           "injected": L(f"+{fmt_num(extra_w)} W constant load without metering plug from {start}",
+                         f"+{fmt_num(extra_w)} W Dauerlast ohne Messsteckdose ab {start}"),
+           "days": out_days, "messages": lab.messages}
     lab.close()
     return res
 
@@ -185,7 +191,8 @@ def scenario_runtime(cfg, real_store, notifier=None, device: str | None = None, 
     d = cfg.devices[key]
     limit = det.runtime_limit(d)
     if not limit:
-        raise SystemExit(f"{d.name}: keine Laufzeitgrenze (max_laufzeit setzen oder erst vorlernen).")
+        raise SystemExit(L(f"{d.name}: no runtime limit (set max_runtime or run prelearn first).",
+                          f"{d.name}: keine Laufzeitgrenze (max_laufzeit setzen oder erst vorlernen)."))
     w = watts or max(d.an_w * 4, 60.0)
     t0 = clock.at(lab.today, 0, 5) + 86400  # tomorrow 00:05 in simulated time
     det.live[key] = type(det.live[key])()
@@ -199,7 +206,7 @@ def scenario_runtime(cfg, real_store, notifier=None, device: str | None = None, 
         before = len(lab.messages)
         det.live_check()
         for m in lab.messages[before:]:
-            timeline.append({"nach_min": round((t - t0) / 60), "meldung": m["message"]})
+            timeline.append({"after_min": round((t - t0) / 60), "message": m["message"]})
         t += 60
     # switch off -> "ist jetzt aus"
     for k in range(1, 3 + int(d.luecke // 60) + 1):
@@ -209,13 +216,16 @@ def scenario_runtime(cfg, real_store, notifier=None, device: str | None = None, 
         det.on_sample(key, tt, 0.3, alive=True)
         det.live_check()
         for m in lab.messages[before:]:
-            timeline.append({"nach_min": round((tt - t0) / 60), "meldung": m["message"]})
-    res = {"szenario": "Gerät läuft zu lange", "geraet": d.name,
-           "grenze_min": round(limit / 60), "grenze_quelle": "config max_laufzeit" if d.max_laufzeit else "gelernt",
-           "eingespielt": f"{fmt_num(w)} W ununterbrochen ab 00:05 für {fmt_num((end - t0) / 3600, 1)} Std., "
-                          f"danach aus", "verlauf": timeline, "meldungen": lab.messages}
+            timeline.append({"after_min": round((tt - t0) / 60), "message": m["message"]})
+    hours = fmt_num((end - t0) / 3600, 1)
+    res = {"scenario": L("Device runs too long", "Gerät läuft zu lange"), "device": d.name,
+           "limit_min": round(limit / 60),
+           "limit_source": "config max_runtime" if d.max_laufzeit else L("learned", "gelernt"),
+           "injected": L(f"{fmt_num(w)} W continuously from 00:05 for {hours} h, then off",
+                         f"{fmt_num(w)} W ununterbrochen ab 00:05 für {hours} Std., danach aus"),
+           "timeline": timeline, "messages": lab.messages}
     lab.close()
     return res
 
 
-SCENARIOS = {"kompressor": scenario_compressor, "grundlast": scenario_baseload, "laufzeit": scenario_runtime}
+SCENARIOS = {"compressor": scenario_compressor, "baseload": scenario_baseload, "runtime": scenario_runtime}

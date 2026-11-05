@@ -11,6 +11,7 @@ FROM base AS test
 COPY requirements-dev.txt .
 RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY tests/ tests/
+COPY config/config.example.yaml config/config.example.yaml
 RUN python -m pytest -q -p no:cacheprovider tests/
 
 FROM base AS app

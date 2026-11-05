@@ -13,6 +13,7 @@ from .features import (EVAL_METRICS, MIN_COVERAGE, PRIORITY, device_day, house_d
                        learned_zero_limit)
 from .segment import Run, buckets, energy_wh, hourly_energy, steps
 from .store import Store
+from .i18n import L, fmt_date, fmt_datetime, fmt_minutes, fmt_num
 from .util import Clock, median
 
 log = logging.getLogger("sfd.detector")
@@ -59,7 +60,7 @@ class Detector:
     # ------------------------------------------------------------------ helpers
     def name(self, dev: str) -> str:
         if dev == HOUSE:
-            return "Haus"
+            return L("House", "Haus")
         d = self.cfg.devices.get(dev)
         return d.name if d else dev
 
@@ -75,7 +76,7 @@ class Detector:
         prefix = "SFD_TEST_" if self.test else "SFD_OK_"
         action = (prefix + "_".join(str(i) for i in ids)) if ids else None
         self.notifications += 1
-        log.info("Meldung: %s – %s", title, message)
+        log.info("Notification: %s – %s", title, message)
         if self._notify:
             self._notify(title, message, action, tag)
 
@@ -87,14 +88,14 @@ class Detector:
                                       message=message, value=value, baseline=baseline, details=details, grp=grp,
                                       test=self.test)
         if notify:
-            self.notify(f"Stromfresser-Detektiv: {self.name(dev)}", message, [aid], tag or f"sfd-{dev}")
+            self.notify(f"{self.cfg.app_name}: {self.name(dev)}", message, [aid], tag or f"sfd-{dev}")
             self.store.update_anomaly(aid, notified=now)
         return aid
 
     def _close(self, a, state: str, recovery_text: str | None = None):
         self.store.update_anomaly(a["id"], state=state, closed=self.clock.now())
         if recovery_text and a["state"] == "offen" and a.get("notified"):
-            self.notify(f"Stromfresser-Detektiv: {self.name(a['dev'])}", recovery_text, None, f"sfd-{a['dev']}")
+            self.notify(f"{self.cfg.app_name}: {self.name(a['dev'])}", recovery_text, None, f"sfd-{a['dev']}")
 
     # ------------------------------------------------------------------ daily processing
     def process_day(self, day: date, data_end: float | None = None, house: bool = True,
@@ -137,17 +138,22 @@ class Detector:
             if plugs_kwh > 0.2 and m["kwh"] < 0.9 * plugs_kwh * m.get("coverage", 1):
                 if not self.store.find_open(HOUSE, "hausdaten_unplausibel", self.test):
                     self._open(HOUSE, "hausdaten_unplausibel", "system",
-                               f"Hausdaten unplausibel: {self.cfg.house.hausverbrauch} meldet für den "
-                               f"{day.strftime('%d.%m.')} {m['kwh']:.1f} kWh, die Messsteckdosen allein "
-                               f"verbrauchten {plugs_kwh:.1f} kWh. Die Hausauswertung (Grundlast, Solaranteil) "
-                               f"ruht, bis der Sensor echte Werte liefert – Sensor in config.yaml prüfen.",
+                               L(f"House data implausible: {self.cfg.house.hausverbrauch} reports "
+                                 f"{fmt_num(m['kwh'], 1)} kWh for {fmt_date(day)}, the metering plugs alone used "
+                                 f"{fmt_num(plugs_kwh, 1)} kWh. The house analysis (base load, solar share) pauses "
+                                 f"until the sensor delivers real values – check the sensor in config.yaml.",
+                                 f"Hausdaten unplausibel: {self.cfg.house.hausverbrauch} meldet für den "
+                                 f"{fmt_date(day)} {fmt_num(m['kwh'], 1)} kWh, die Messsteckdosen allein "
+                                 f"verbrauchten {fmt_num(plugs_kwh, 1)} kWh. Die Hausauswertung (Grundlast, "
+                                 f"Solaranteil) ruht, bis der Sensor echte Werte liefert – Sensor in config.yaml "
+                                 f"prüfen."),
                                start_day=day)
                 self.store.put_daily(HOUSE, day.isoformat(), {"coverage": 0, "unplausibel": 1,
                                                               "kwh_gemeldet": m["kwh"], "steckdosen_kwh": plugs_kwh})
                 return {"unplausibel": 1}
             a = self.store.find_open(HOUSE, "hausdaten_unplausibel", self.test)
             if a:
-                self._close(a, "erledigt", "Hausdaten sind wieder plausibel.")
+                self._close(a, "erledigt", L("House data is plausible again.", "Hausdaten sind wieder plausibel."))
         if m:
             old = self.store.daily_day(HOUSE, day.isoformat())
             if m.get("coverage", 0) >= old.get("coverage", 0):
@@ -191,7 +197,7 @@ class Detector:
                     best, best_dist = pid, dist
             if best is None or best_dist > math.log(1.6):
                 pid = chr(ord("A") + len(progs)) if len(progs) < 26 else f"P{len(progs) + 1}"
-                progs[pid] = {"name": f"Programm {pid}", "recent": [[round(d_min, 1), round(kwh, 3)]]}
+                progs[pid] = {"name": explain.program_name(pid), "recent": [[round(d_min, 1), round(kwh, 3)]]}
                 r.program = pid
                 self.store.put_program(dev.key, pid, progs[pid]["name"], progs[pid]["recent"])
                 continue
@@ -212,7 +218,8 @@ class Detector:
                 for kind in ("dauer", "energie"):
                     a = self.store.find_open(dev.key, f"programm:{best}:{kind}", self.test)
                     if a:
-                        self._close(a, "erledigt", f"{dev.name}: {p['name']} läuft wieder normal.")
+                        self._close(a, "erledigt", L(f"{dev.name}: {p['name']} runs normally again.",
+                                                        f"{dev.name}: {p['name']} läuft wieder normal."))
                 continue
             # stable deviation: N of the last 3 runs of this program flagged the same way
             prev = [row for row in self.store.runs(dev.key, 0, r.start) if row[4] == best][-2:]
@@ -265,7 +272,7 @@ class Detector:
                             self._relearn(key, metric, a_start, "automatisch")
                             self.store.update_anomaly(a["id"], state="gelernt", closed=self.clock.now())
                             if notify:
-                                self.notify(f"Stromfresser-Detektiv: {self.name(key)}",
+                                self.notify(f"{self.cfg.app_name}: {self.name(key)}",
                                             explain.learned_message(self.name(key), metric, (day - a_start).days + 1),
                                             None, f"sfd-{key}")
                     elif n >= self.cfg.stable_days:
@@ -288,7 +295,7 @@ class Detector:
                 u = results["unzugeordnet_nacht_w"]
                 if u.baseline is not None:
                     extra["unzugeordnet_diff"] = u.value - u.baseline
-            text = explain.daily_message(self.name(key) if key != HOUSE else "Haus", typ, self.profile(key), metric,
+            text = explain.daily_message(self.name(key), typ, self.profile(key), metric,
                                          res.direction, res.value, res.baseline, n, start, self.cfg.price_import,
                                          extra)
             texts.append(text)
@@ -298,9 +305,9 @@ class Detector:
         message = texts[0]
         if len(texts) > 1:
             extras = [explain.METRIC_LABEL.get(t[0], t[0]) for t in triggered[1:]]
-            message += " Ebenfalls auffällig: " + ", ".join(extras) + "."
+            message += L(" Also unusual: ", " Ebenfalls auffällig: ") + ", ".join(extras) + "."
         if notify:
-            self.notify(f"Stromfresser-Detektiv: {self.name(key)}", message, ids, f"sfd-{key}")
+            self.notify(f"{self.cfg.app_name}: {self.name(key)}", message, ids, f"sfd-{key}")
             for aid in ids:
                 self.store.update_anomaly(aid, notified=self.clock.now())
         return ids
@@ -374,7 +381,7 @@ class Detector:
                 lv.state, lv.unavail_since, lv.entity_missing = "ok", None, False
             a = self.store.find_open(HOUSE, "hausdaten", self.test)
             if a:
-                self._close(a, "erledigt", "Hausdaten kommen wieder an.")
+                self._close(a, "erledigt", L("House data is arriving again.", "Hausdaten kommen wieder an."))
             return
         lv = self.live.get(dev)
         if lv is None:
@@ -390,7 +397,8 @@ class Detector:
         for metric in ("nicht_verfuegbar", "keine_daten"):
             a = self.store.find_open(dev, metric, self.test) if fresh else None
             if a:
-                self._close(a, "erledigt", f"{d.name}: Steckdose meldet wieder Werte.")
+                self._close(a, "erledigt", L(f"{d.name}: plug is sending readings again.",
+                                                        f"{d.name}: Steckdose meldet wieder Werte."))
         # run tracking (for 'runs unusually long')
         if w >= d.an_w:
             if lv.run_start is None or (lv.last_on is not None and ts - lv.last_on > d.luecke):
@@ -401,7 +409,8 @@ class Detector:
             a = self.store.find_open(dev, "laufzeit", self.test)
             if a:
                 ran = (lv.last_on - (a["details"].get("run_start") or lv.last_on)) / 60
-                self._close(a, "erledigt", f"{d.name} ist jetzt aus (lief {explain.fmt_minutes(ran)}).")
+                self._close(a, "erledigt", L(f"{d.name} is off now (ran for {fmt_minutes(ran)}).",
+                                                        f"{d.name} ist jetzt aus (lief {fmt_minutes(ran)})."))
         # zero tracking (for 'suddenly uses nothing')
         if w < 0.5:
             lv.zero_since = lv.zero_since or ts
@@ -409,7 +418,8 @@ class Detector:
             lv.zero_since = None
             a = self.store.find_open(dev, "null", self.test)
             if a:
-                self._close(a, "erledigt", f"{d.name}: verbraucht wieder Strom ({explain.fmt_num(w, 1)} W).")
+                self._close(a, "erledigt", L(f"{d.name}: using power again ({fmt_num(w, 1)} W).",
+                                                        f"{d.name}: verbraucht wieder Strom ({fmt_num(w, 1)} W)."))
 
     def on_reported(self, dev: str, reported: float):
         lv = self.house_live if dev.startswith(HOUSE) else self.live.get(dev)
@@ -505,14 +515,17 @@ class Detector:
                 started = self.store.meta("started", now)
                 ref = since or started
                 if now - ref >= self.cfg.house_stale_after:
-                    why = (hl.missing_reason or "die Entität fehlt in Home Assistant"
-                           if hl.entity_missing else f"Zustand „{hl.state}“" if hl.state != "ok"
-                           else "keine neuen Werte")
-                    new.append(self._open(HOUSE, "hausdaten", "system",
-                                          f"Hausdaten (Hausverbrauch, Netzbezug, Einspeisung) fehlen seit "
-                                          f"{explain.fmt_minutes((now - ref) / 60)}: {why}. Grundlast, nicht "
-                                          f"zugeordneter Verbrauch und Solaranteil können so nicht ausgewertet "
-                                          f"werden – Growatt-Integration prüfen."))
+                    why = (hl.missing_reason or L("the entity is missing in Home Assistant",
+                                                  "die Entität fehlt in Home Assistant")
+                           if hl.entity_missing else L(f"state “{hl.state}”", f"Zustand „{hl.state}“")
+                           if hl.state != "ok" else L("no new values", "keine neuen Werte"))
+                    d = fmt_minutes((now - ref) / 60)
+                    new.append(self._open(HOUSE, "hausdaten", "system", L(
+                        f"House data (consumption, grid import, export) missing for {d}: {why}. Base load, unassigned "
+                        f"consumption and solar share cannot be analysed – check the meter integration.",
+                        f"Hausdaten (Hausverbrauch, Netzbezug, Einspeisung) fehlen seit {d}: {why}. Grundlast, nicht "
+                        f"zugeordneter Verbrauch und Solaranteil können so nicht ausgewertet werden – Integration des "
+                        f"Zählers prüfen.")))
         return new
 
     def ha_state(self, connected: bool):
@@ -522,10 +535,13 @@ class Detector:
                 a = self.store.find_open("_system", "ha", self.test)
                 if a:
                     self.store.update_anomaly(a["id"], state="erledigt", closed=now)
-                frm = self.clock.local(self.ha_down_since).strftime("%d.%m. %H:%M")
-                self.notify("Stromfresser-Detektiv: Home Assistant",
-                            f"Home Assistant war {explain.fmt_minutes((now - self.ha_down_since) / 60)} nicht "
-                            f"erreichbar (ab {frm}). In dieser Zeit fehlen Messwerte.", None, "sfd-ha")
+                frm = fmt_datetime(self.clock.local(self.ha_down_since))
+                d = fmt_minutes((now - self.ha_down_since) / 60)
+                self.notify(f"{self.cfg.app_name}: Home Assistant",
+                            L(f"Home Assistant was unreachable for {d} (from {frm}). Readings are missing for that "
+                              f"time.",
+                              f"Home Assistant war {d} nicht erreichbar (ab {frm}). In dieser Zeit fehlen Messwerte."),
+                            None, "sfd-ha")
             self.ha_down_since = None
         elif not connected and self.ha_connected:
             self.ha_down_since = now
@@ -557,7 +573,7 @@ class Detector:
         if t.lower() in ("haus", HOUSE):
             key = HOUSE
         if key is None:
-            raise KeyError(f"Unbekanntes Gerät oder unbekannte Meldung: {target}")
+            raise KeyError(L(f"Unknown device or finding: {target}", f"Unbekanntes Gerät oder unbekannte Meldung: {target}"))
         return self.store.anomalies(OPEN_STATES, dev=key, test=self.test)
 
     def feedback(self, target, source: str = "cli", note: str | None = None) -> list[dict]:
@@ -594,9 +610,11 @@ class Detector:
             done.append(a)
         if done:
             names = sorted({self.name(a["dev"]) for a in done})
-            self.notify("Stromfresser-Detektiv: Verstanden",
-                        f"„War ok“ für {', '.join(names)} übernommen – das gilt jetzt als normal "
-                        f"und ich lerne es dazu.", None, f"sfd-{done[0]['dev']}")
+            who = ", ".join(names)
+            self.notify(f"{self.cfg.app_name}: " + L("Got it", "Verstanden"),
+                        L(f"“Was ok” for {who} accepted – this is normal now and I learn it.",
+                          f"„War ok“ für {who} übernommen – das gilt jetzt als normal und ich lerne es dazu."),
+                        None, f"sfd-{done[0]['dev']}")
         return done
 
     # ------------------------------------------------------------------ status

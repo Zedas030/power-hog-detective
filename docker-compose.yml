@@ -1,11 +1,11 @@
-# Stromfresser-Detektiv – start: docker compose up -d --build
+# Power Hog Detective – start: docker compose up -d --build
 services:
-  stromfresser-detektiv:
+  power-hog-detective:
     build:
       context: .
       target: app
-    image: stromfresser-detektiv:1.0.0
-    container_name: stromfresser-detektiv
+    image: power-hog-detective:1.1.0
+    container_name: power-hog-detective
     restart: unless-stopped            # autostart after reboot
     network_mode: host                 # reaches HA (127.0.0.1:8123) and Prometheus; web UI on port 8101
     env_file: .env                     # HA_TOKEN (chmod 600)

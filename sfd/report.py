@@ -9,7 +9,9 @@ from pathlib import Path
 from .config import TYPE_LABEL, Config
 from .detector import HOUSE, Detector
 from .store import Store
-from .util import MONTHS, Clock, fmt_num, median
+from .i18n import L, fmt_date, fmt_datetime, fmt_num, lang
+from .i18n import month as month_name
+from .util import Clock, median
 
 PALETTE = ["#2f6fdf", "#e0702a", "#2a9d6f", "#c0395a", "#7b5cd6", "#c79a12", "#1f9bb4", "#8a6d55",
            "#d65fb0", "#5f7d2a", "#4a5568", "#b04a2a", "#3c8dbc"]
@@ -128,7 +130,7 @@ def build(cfg: Config, store: Store, det: Detector, clock: Clock, year: int, mon
                  and first.isoformat() <= a["start_day"] <= last.isoformat()]
     anomalies.sort(key=lambda a: a["start_day"])
     return {
-        "jahr": year, "monat": month, "titel": f"{MONTHS[month - 1]} {year}", "tage": n_days,
+        "jahr": year, "monat": month, "titel": f"{month_name(month - 1)} {year}", "tage": n_days,
         "preis": price, "einspeiseverguetung": cfg.price_export,
         "geraete": dev_rows, "haus_kwh": house_kwh, "netz_kwh": grid_kwh, "einspeisung_kwh": export_kwh,
         "steckdosen_kwh": plugs_kwh, "solar_anteil": solar_share, "solar_kwh": solar_kwh,
@@ -140,6 +142,10 @@ def build(cfg: Config, store: Store, det: Detector, clock: Clock, year: int, mon
         "einspeise_erloes": (export_kwh or 0) * cfg.price_export,
         "hinweise": list((cfg.raw.get("bericht") or {}).get("hinweise") or []),
     }
+
+
+def eur(x, digits=0) -> str:
+    return L(f"€{fmt_num(x, digits)}", f"{fmt_num(x, digits)} €")
 
 
 def _savings(cfg, store, clock, det, rows, plug_hourly, house, grid, first, last, n_days, un_vals, dle_kwh,
@@ -162,6 +168,7 @@ def _savings(cfg, store, clock, det, rows, plug_hourly, house, grid, first, last
             night_fracs.append(f)
     noon = sum(noon_fracs) / len(noon_fracs) if noon_fracs else None
     night = sum(night_fracs) / len(night_fracs) if night_fracs else 1.0
+    n0, n1 = cfg.house.nacht_von // 60, cfg.house.nacht_bis // 60
 
     for key, d in cfg.devices.items():
         r = by_key[key]
@@ -173,66 +180,86 @@ def _savings(cfg, store, clock, det, rows, plug_hourly, house, grid, first, last
         # 1) standby that could be switched off
         if d.typ in ("nutzung", "programm", "ladegeraet") and standby and standby >= 1.0:
             kwh_y = standby * (24 - on_h) * 365 / 1000
-            eur = kwh_y * price * night
-            out.append({"eur": eur, "titel": f"{d.name}: Standby abschalten",
-                        "text": f"{fmt_num(standby, 1)} W Standby an rund {fmt_num(24 - on_h, 0)} Std. pro Tag "
-                                f"≈ {fmt_num(kwh_y, 0)} kWh/Jahr. Steckdose nachts/bei Nichtnutzung per Zeitplan "
-                                f"ausschalten oder Steckerleiste mit Schalter."})
-        # 1b) usage devices that keep running at night (measured, 01-05 h)
+            out.append({"eur": kwh_y * price * night, "titel": L(f"{d.name}: switch off standby",
+                                                                 f"{d.name}: Standby abschalten"),
+                        "text": L(f"{fmt_num(standby, 1)} W standby for about {fmt_num(24 - on_h, 0)} h a day "
+                                  f"≈ {fmt_num(kwh_y, 0)} kWh/year. Switch the plug off at night/when unused by "
+                                  f"schedule or use a power strip with a switch.",
+                                  f"{fmt_num(standby, 1)} W Standby an rund {fmt_num(24 - on_h, 0)} Std. pro Tag "
+                                  f"≈ {fmt_num(kwh_y, 0)} kWh/Jahr. Steckdose nachts/bei Nichtnutzung per Zeitplan "
+                                  f"ausschalten oder Steckerleiste mit Schalter.")})
+        # 1b) usage devices that keep running at night (measured in the night window)
         if d.typ == "nutzung":
-            night_vals = [wh for h, wh in plug_hourly[key].items()
-                          if cfg.house.nacht_von // 60 <= clock.local(h).hour < cfg.house.nacht_bis // 60]
+            night_vals = [wh for h, wh in plug_hourly[key].items() if n0 <= clock.local(h).hour < n1]
             if len(night_vals) >= 24:
                 night_w = sum(night_vals) / len(night_vals)
                 if night_w >= max(20.0, (standby or 0) * 2):
-                    hours = (cfg.house.nacht_bis - cfg.house.nacht_von) / 60
-                    kwh_y = (night_w - (standby or 0)) * hours * 365 / 1000
+                    hrs = (cfg.house.nacht_bis - cfg.house.nacht_von) / 60
+                    kwh_y = (night_w - (standby or 0)) * hrs * 365 / 1000
                     out.append({"eur": kwh_y * price * night,
-                                "titel": f"{d.name}: läuft nachts",
-                                "text": f"Zwischen {cfg.house.nacht_von // 60:02d} und {cfg.house.nacht_bis // 60:02d} Uhr "
-                                        f"im Schnitt {fmt_num(night_w, 0)} W (≈ {fmt_num(kwh_y, 0)} kWh/Jahr allein in "
-                                        f"diesen {fmt_num(hours, 0)} Stunden). Energiesparmodus/Ruhezustand nach "
-                                        f"Inaktivität oder nachts herunterfahren."})
+                                "titel": L(f"{d.name}: runs at night", f"{d.name}: läuft nachts"),
+                                "text": L(f"Between {n0:02d}:00 and {n1:02d}:00 on average {fmt_num(night_w, 0)} W "
+                                          f"(≈ {fmt_num(kwh_y, 0)} kWh/year in these {fmt_num(hrs, 0)} hours alone). "
+                                          f"Use sleep/standby after inactivity or shut down at night.",
+                                          f"Zwischen {n0:02d} und {n1:02d} Uhr im Schnitt {fmt_num(night_w, 0)} W "
+                                          f"(≈ {fmt_num(kwh_y, 0)} kWh/Jahr allein in diesen {fmt_num(hrs, 0)} "
+                                          f"Stunden). Energiesparmodus/Ruhezustand nach Inaktivität oder nachts "
+                                          f"herunterfahren.")})
         # 2) fridge vs. efficient reference
         if d.typ == "zyklus" and det.profile(key) == "kuehlgeraet":
             kwh_y = r["kwh"] * year_factor
-            if kwh_y > cfg.fridge_reference_kwh:
-                eur = (kwh_y - cfg.fridge_reference_kwh) * price * (r["netz_kwh"] / r["kwh"])
-                out.append({"eur": eur, "titel": f"{d.name}: Verbrauch über Referenz",
-                            "text": f"Hochgerechnet {fmt_num(kwh_y, 0)} kWh/Jahr, ein effizientes Gerät braucht "
-                                    f"etwa {fmt_num(cfg.fridge_reference_kwh, 0)} kWh. Erst prüfen: Temperatur auf "
-                                    f"7 °C, Dichtung, Rückwand frei, abtauen; sonst Ersatz erwägen."})
+            ref = cfg.fridge_reference_kwh
+            if kwh_y > ref:
+                out.append({"eur": (kwh_y - ref) * price * (r["netz_kwh"] / r["kwh"]),
+                            "titel": L(f"{d.name}: above reference", f"{d.name}: Verbrauch über Referenz"),
+                            "text": L(f"Extrapolated {fmt_num(kwh_y, 0)} kWh/year, an efficient appliance needs about "
+                                      f"{fmt_num(ref, 0)} kWh. Check first: 7 °C setting, door seal, free rear vent, "
+                                      f"defrost; otherwise consider a replacement.",
+                                      f"Hochgerechnet {fmt_num(kwh_y, 0)} kWh/Jahr, ein effizientes Gerät braucht "
+                                      f"etwa {fmt_num(ref, 0)} kWh. Erst prüfen: Temperatur auf 7 °C, Dichtung, "
+                                      f"Rückwand frei, abtauen; sonst Ersatz erwägen.")})
         # 3) shift flexible loads into solar hours
         if d.typ in ("programm", "zeitplan") or det.profile(key) == "boiler":
             if noon is not None and r["kwh"] > 0:
-                actual = r["netz_kwh"] * price
-                possible = r["kwh"] * noon * price
-                eur = (actual - possible) * year_factor
-                if eur > 1:
-                    out.append({"eur": eur, "titel": f"{d.name}: in Sonnenstunden verlegen",
-                                "text": f"Bisher {fmt_num(100 * r['netz_kwh'] / r['kwh'], 0)} % aus dem Netz; "
-                                        f"zwischen 11 und 15 Uhr wären es im Schnitt nur "
-                                        f"{fmt_num(100 * noon, 0)} %. Startzeit/Zeitplan auf die Mittagszeit legen."})
+                gain = (r["netz_kwh"] * price - r["kwh"] * noon * price) * year_factor
+                if gain > 1:
+                    now_pct = fmt_num(100 * r["netz_kwh"] / r["kwh"], 0)
+                    out.append({"eur": gain, "titel": L(f"{d.name}: move into sunny hours",
+                                                        f"{d.name}: in Sonnenstunden verlegen"),
+                                "text": L(f"So far {now_pct} % from the grid; between 11:00 and 15:00 it would be only "
+                                          f"{fmt_num(100 * noon, 0)} % on average. Move the start time/schedule to "
+                                          f"midday.",
+                                          f"Bisher {now_pct} % aus dem Netz; zwischen 11 und 15 Uhr wären es im Schnitt "
+                                          f"nur {fmt_num(100 * noon, 0)} %. Startzeit/Zeitplan auf die Mittagszeit "
+                                          f"legen.")})
     # 4) unassigned base load
     un = median(un_vals)
     if un and un > 10:
         share = float((cfg.raw.get("bericht") or {}).get("grundlast_sparanteil", 0.3))
         kwh_y = un * 8.76
-        eur = kwh_y * price * night * share
-        out.append({"eur": eur, "titel": "Nicht zugeordnete Grundlast aufspüren",
-                    "text": f"Nachts laufen im Mittel {fmt_num(un, 0)} W, die keine Messsteckdose sieht "
-                            f"(≈ {fmt_num(kwh_y, 0)} kWh/Jahr). Gerechnet mit {fmt_num(share * 100, 0)} % davon "
-                            f"vermeidbar (Netzteile, Standby ohne Messsteckdose, Umwälzpumpe). Tipp: nachts "
-                            f"einzelne Sicherungen kurz ausschalten und auf den Hausverbrauch schauen."})
+        out.append({"eur": kwh_y * price * night * share,
+                    "titel": L("Track down unassigned base load", "Nicht zugeordnete Grundlast aufspüren"),
+                    "text": L(f"At night {fmt_num(un, 0)} W run on average that no metering plug sees "
+                              f"(≈ {fmt_num(kwh_y, 0)} kWh/year). Assumed {fmt_num(share * 100, 0)} % of it avoidable "
+                              f"(power supplies, standby without metering plug, circulation pump). Tip: switch off "
+                              f"single circuits briefly at night and watch the house consumption.",
+                              f"Nachts laufen im Mittel {fmt_num(un, 0)} W, die keine Messsteckdose sieht "
+                              f"(≈ {fmt_num(kwh_y, 0)} kWh/Jahr). Gerechnet mit {fmt_num(share * 100, 0)} % davon "
+                              f"vermeidbar (Netzteile, Standby ohne Messsteckdose, Umwälzpumpe). Tipp: nachts "
+                              f"einzelne Sicherungen kurz ausschalten und auf den Hausverbrauch schauen.")})
     # 5) instantaneous water heater
     if dle_kwh > 1 and cfg.house.dle_aktiv:
         kwh_y = dle_kwh * year_factor
-        eur = kwh_y * price * cfg.dle_saving_share
-        out.append({"eur": eur, "titel": f"{cfg.house.dle_name}: Sparduschkopf",
-                    "text": f"Grob geschätzt {fmt_num(dle_kwh, 0)} kWh im Monat aus großen, keiner Steckdose "
-                            f"zuzuordnenden Lastspitzen (vermutlich {cfg.house.dle_name}). Ein Sparduschkopf "
-                            f"spart typisch {fmt_num(cfg.dle_saving_share * 100, 0)} %, zusätzlich Temperatur "
-                            f"am Gerät auf 38–40 °C begrenzen."})
+        nm = cfg.house.dle_name
+        pct = fmt_num(cfg.dle_saving_share * 100, 0)
+        out.append({"eur": kwh_y * price * cfg.dle_saving_share,
+                    "titel": L(f"{nm}: water-saving shower head", f"{nm}: Sparduschkopf"),
+                    "text": L(f"Roughly {fmt_num(dle_kwh, 0)} kWh this month from large load peaks that no plug sees "
+                              f"(probably the {nm}). A water-saving shower head typically saves {pct} %; also limit "
+                              f"the temperature at the device to 38–40 °C.",
+                              f"Grob geschätzt {fmt_num(dle_kwh, 0)} kWh im Monat aus großen, keiner Steckdose "
+                              f"zuzuordnenden Lastspitzen (vermutlich {nm}). Ein Sparduschkopf spart typisch {pct} %, "
+                              f"zusätzlich Temperatur am Gerät auf 38–40 °C begrenzen.")})
     out.sort(key=lambda x: -x["eur"])
     return out[:5]
 
@@ -253,10 +280,10 @@ ol.save li{margin:0 0 12px}ol.save b.eur{color:var(--ok)}.warn{color:var(--warn)
 """
 
 
-def _svg_baseload(days):
+def _svg_baseload(days, chart_label, night_label):
     pts = [(d, b, u) for d, b, u in days if b is not None]
     if not pts:
-        return "<p class='mut'>Keine Hausdaten für die Grundlast in diesem Monat.</p>"
+        return f"<p class='mut'>{L('No base load data this month.', 'Keine Daten für die Grundlast in diesem Monat.')}</p>"
     w, h, pad = 900, 220, 36
     mx = max(max(b for _, b, _ in pts), 1) * 1.15
     n = len(days)
@@ -269,22 +296,26 @@ def _svg_baseload(days):
                    f"<text x='4' y='{ys(v) + 4:.1f}'>{fmt_num(v)} W</text>" for v in (0, mx / 2, mx / 1.15))
     labels = "".join(f"<text x='{xs(i):.1f}' y='{h - 10}' text-anchor='middle'>{d.day}.</text>"
                      for i, (d, _, _) in enumerate(days) if d.day in (1, 8, 15, 22, 29))
-    return (f"<svg viewBox='0 0 {w} {h}' width='100%' role='img' aria-label='Nächtliche Grundlast'>{grid}{labels}"
+    aria = L("Night base load", "Nächtliche Grundlast")
+    return (f"<svg viewBox='0 0 {w} {h}' width='100%' role='img' aria-label='{aria}'>{grid}{labels}"
             f"<polyline fill='none' stroke='var(--acc)' stroke-width='2.5' points='{line_b}'/>"
             f"<polyline fill='none' stroke='#e0702a' stroke-width='2' stroke-dasharray='5 4' points='{line_u}'/></svg>"
-            f"<p class='mut'><span style='color:var(--acc)'>━</span> {chart_label} (Mittel {cfg_night_label})"
-            + (" &nbsp; <span style='color:#e0702a'>╍</span> davon keiner Steckdose zuzuordnen" if line_u else "")
-            + "</p>")
+            f"<p class='mut'><span style='color:var(--acc)'>━</span> {chart_label} ({L('mean', 'Mittel')} {night_label})"
+            + (" &nbsp; <span style='color:#e0702a'>╍</span> " + L("of which not attributable to any plug",
+                                                                    "davon keiner Steckdose zuzuordnen")
+               if line_u else "") + "</p>")
 
 
-cfg_night_label = "01–05 Uhr"
-chart_label = "Grundlast Haus"
+def report_title(cfg: Config, rep: dict) -> str:
+    return L(f"{cfg.short_name} report {rep['titel']}", f"{cfg.short_name}-Bericht {rep['titel']}")
 
 
 def render_html(rep: dict, cfg: Config, generated: str) -> str:
-    global cfg_night_label, chart_label
-    chart_label = "Grundlast Haus" if rep["haus_kwh"] is not None else "Grundlast der Messsteckdosen"
-    cfg_night_label = f"{cfg.house.nacht_von // 60:02d}–{cfg.house.nacht_bis // 60:02d} Uhr"
+    house_known = rep["haus_kwh"] is not None
+    chart_label = (L("House base load", "Grundlast Haus") if house_known
+                   else L("Base load of the metering plugs", "Grundlast der Messsteckdosen"))
+    night_label = L(f"{cfg.house.nacht_von // 60:02d}:00–{cfg.house.nacht_bis // 60:02d}:00",
+                    f"{cfg.house.nacht_von // 60:02d}–{cfg.house.nacht_bis // 60:02d} Uhr")
     e = html.escape
     rows = rep["geraete"]
     mx = max([r["kwh"] for r in rows] + [0.001])
@@ -292,62 +323,91 @@ def render_html(rep: dict, cfg: Config, generated: str) -> str:
         f"<tr><td>{e(r['name'])}<br><span class='mut' style='font-size:12px'>{e(r['typ'])}</span></td>"
         f"<td style='min-width:120px'><div class='bar' style='width:{100 * r['kwh'] / mx:.0f}%;"
         f"background:{PALETTE[i % len(PALETTE)]}'></div></td>"
-        f"<td>{fmt_num(r['kwh'], 1)}</td><td>{fmt_num(r['kosten'], 2)} €</td>"
+        f"<td>{fmt_num(r['kwh'], 1)}</td><td>{eur(r['kosten'], 2)}</td>"
         f"<td>{'–' if r['solar_anteil'] is None else fmt_num(100 * r['solar_anteil'], 0) + ' %'}</td>"
         f"<td>{fmt_num(100 * r['abdeckung'], 0)} %</td></tr>"
         for i, r in enumerate(rows))
-    house_known = rep["haus_kwh"] is not None
-    kpis = [
-        ("Hausverbrauch", f"{fmt_num(rep['haus_kwh'], 0)} kWh" if house_known else "keine Daten"),
-        ("davon Messsteckdosen", f"{fmt_num(rep['steckdosen_kwh'], 0)} kWh"),
-        ("Netzbezug", f"{fmt_num(rep['netz_kwh'], 0)} kWh" if rep["netz_kwh"] is not None else "keine Daten"),
-        ("Anteil Solar/Batterie" + (" (geschätzt)" if rep["solar_geschaetzt"] else ""),
-         f"{fmt_num(100 * rep['solar_anteil'], 0)} %" if rep["solar_anteil"] is not None else "keine Daten"),
-        ("Balkonkraftwerk ins Haus", f"{fmt_num(rep['solar_kwh'], 0)} kWh" if rep["solar_kwh"] is not None
-         else "keine Daten"),
-        ("Stromkosten Netz" + (" (Messsteckdosen)" if rep["haus_kwh"] is None else ""),
-         f"{fmt_num(rep['netzkosten'], 2)} €"),
-        ("Nächtliche Grundlast", f"{fmt_num(rep['grundlast_median'], 0)} W" if rep["grundlast_median"] else "–"),
+    no_data = L("no data", "keine Daten")
+    kpis = []
+    if house_known:
+        kpis.append((L("House consumption", "Hausverbrauch"), f"{fmt_num(rep['haus_kwh'], 0)} kWh"))
+    kpis.append((L("of which metering plugs", "davon Messsteckdosen"), f"{fmt_num(rep['steckdosen_kwh'], 0)} kWh"))
+    if house_known:
+        kpis.append((L("Grid import", "Netzbezug"),
+                     f"{fmt_num(rep['netz_kwh'], 0)} kWh" if rep["netz_kwh"] is not None else no_data))
+    kpis += [
+        (L("Solar/battery share", "Anteil Solar/Batterie") + (L(" (estimated)", " (geschätzt)")
+                                                              if rep["solar_geschaetzt"] else ""),
+         f"{fmt_num(100 * rep['solar_anteil'], 0)} %" if rep["solar_anteil"] is not None else no_data),
+        (L("Solar/battery into the house", "Balkonkraftwerk ins Haus"),
+         f"{fmt_num(rep['solar_kwh'], 0)} kWh" if rep["solar_kwh"] is not None else no_data),
+        (L("Grid electricity cost", "Stromkosten Netz") + ("" if house_known else L(" (metering plugs)",
+                                                                                    " (Messsteckdosen)")),
+         eur(rep["netzkosten"], 2)),
+        (L("Night base load", "Nächtliche Grundlast"),
+         f"{fmt_num(rep['grundlast_median'], 0)} W" if rep["grundlast_median"] else "–"),
     ]
-    if not house_known:  # no meter: do not show empty tiles
-        kpis = [k for k in kpis if k[0] not in ("Hausverbrauch", "Netzbezug")]
     kpi_html = "".join(f"<div class='card kpi'><span>{k}</span><b>{v}</b></div>" for k, v in kpis)
-    saves = "".join(f"<li><b>{e(s['titel'])}</b> – <b class='eur'>{fmt_num(s['eur'], 0)} €/Jahr</b><br>"
+    per_year = L("/year", "/Jahr")
+    saves = "".join(f"<li><b>{e(s['titel'])}</b> – <b class='eur'>{eur(s['eur'])}{per_year}</b><br>"
                     f"<span class='mut'>{e(s['text'])}</span></li>" for s in rep["sparpotenziale"])
-    anoms = "".join(f"<li><span class='mut'>ab {date.fromisoformat(a['start_day']).strftime('%d.%m.')}</span> "
+    anoms = "".join(f"<li><span class='mut'>{L('from', 'ab')} {fmt_date(date.fromisoformat(a['start_day']))}</span> "
                     f"{e(a['message'])} <span class='mut'>({e(a['state'])})</span></li>"
-                    for a in rep["auffaelligkeiten"]) or "<li class='mut'>Keine Auffälligkeiten in diesem Monat.</li>"
+                    for a in rep["auffaelligkeiten"]) or \
+        f"<li class='mut'>{L('No findings this month.', 'Keine Auffälligkeiten in diesem Monat.')}</li>"
     notes = []
-    if rep["haus_kwh"] is None:
-        notes.append("Kein Hauszähler in Home Assistant: Hausverbrauch, Netzbezug, nächtliche Grundlast des ganzen "
-                     "Hauses und Durchlauferhitzer sind nicht messbar. Alle Zahlen beziehen sich auf die "
-                     "Messsteckdosen." + (" Der Solar/Batterie-Anteil ist aus der NOAH-Ausgangsleistung geschätzt "
-                                          "(Nulleinspeisung: der NOAH deckt zuerst die Steckdosen)."
-                                          if rep["solar_geschaetzt"] else ""))
+    if not house_known:
+        notes.append(L("No whole-house meter in Home Assistant: house consumption, grid import, the whole-house night "
+                       "base load and the water heater cannot be measured. All figures refer to the metering plugs.",
+                       "Kein Hauszähler in Home Assistant: Hausverbrauch, Netzbezug, nächtliche Grundlast des ganzen "
+                       "Hauses und Durchlauferhitzer sind nicht messbar. Alle Zahlen beziehen sich auf die "
+                       "Messsteckdosen.")
+                     + (L(" The solar/battery share is estimated from the power fed into the house by the "
+                          "battery/inverter (zero export: it covers the plugs first).",
+                          " Der Solar/Batterie-Anteil ist aus der Einspeiseleistung von Speicher/Wechselrichter ins "
+                          "Haus geschätzt (Nulleinspeisung: sie deckt zuerst die Steckdosen).")
+                        if rep["solar_geschaetzt"] else ""))
     elif rep["hausdaten_stunden"] < rep["stunden"] * 0.9:
-        notes.append(f"Hausdaten (Growatt) nur für {fmt_num(100 * rep['hausdaten_stunden'] / rep['stunden'], 0)} % "
-                     f"der Stunden vorhanden; Kosten ohne Hausdaten sind mit vollem Netzpreis gerechnet.")
+        pct = fmt_num(100 * rep["hausdaten_stunden"] / rep["stunden"], 0)
+        notes.append(L(f"House data only available for {pct} % of the hours; costs without house data use the full "
+                       f"grid price.",
+                       f"Hausdaten nur für {pct} % der Stunden vorhanden; Kosten ohne Hausdaten sind mit vollem "
+                       f"Netzpreis gerechnet."))
     for r in rows:
         if r["abdeckung"] < 0.9:
-            notes.append(f"{r['name']}: Messwerte nur für {fmt_num(100 * r['abdeckung'], 0)} % des Monats.")
+            pct = fmt_num(100 * r["abdeckung"], 0)
+            notes.append(L(f"{r['name']}: readings for only {pct} % of the month.",
+                           f"{r['name']}: Messwerte nur für {pct} % des Monats."))
     notes += rep["hinweise"]
-    notes_html = "".join(f"<li>{e(n)}</li>" for n in notes) or "<li class='mut'>Keine.</li>"
+    notes_html = "".join(f"<li>{e(n)}</li>" for n in notes) or f"<li class='mut'>{L('None.', 'Keine.')}</li>"
     other = (rep["haus_kwh"] - rep["steckdosen_kwh"]) if house_known else None
-    return f"""<!doctype html><html lang="de"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Stromfresser-Bericht {e(rep['titel'])}</title>
+    title = report_title(cfg, rep)
+    other_txt = ""
+    if other is not None:
+        other_txt = L(f"Not covered by metering plugs: {fmt_num(other, 0)} kWh (e.g. {e(cfg.house.dle_name)}, lights, "
+                      f"stove).",
+                      f"Nicht über Messsteckdosen erfasst: {fmt_num(other, 0)} kWh (u. a. {e(cfg.house.dle_name)}, "
+                      f"Licht, Herd).")
+    gm = rep["grundlast_median"]
+    base_tail = (L(", of which not attributable to any plug: <b>", ", davon keiner Steckdose zuzuordnen: <b>")
+                 + fmt_num(rep["unzugeordnet_median"], 0) + " W</b>" if rep["unzugeordnet_median"] is not None
+                 else L(" – metering plugs only; without a meter the whole house cannot be measured",
+                        " – nur Messsteckdosen, ohne Hauszähler nicht für das ganze Haus messbar"))
+    return f"""<!doctype html><html lang="{lang()}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(title)}</title>
 <style>{CSS}</style></head><body><main>
-<h1>Stromfresser-Bericht {e(rep['titel'])}</h1>
-<p class="mut">Strompreis {fmt_num(rep['preis'], 2)} €/kWh, Einspeisevergütung {fmt_num(rep['einspeiseverguetung'], 2)} €/kWh · erstellt {e(generated)}</p>
+<h1>{e(title)}</h1>
+<p class="mut">{L('Electricity price', 'Strompreis')} {eur(rep['preis'], 2)}/kWh, {L('feed-in tariff', 'Einspeisevergütung')} {eur(rep['einspeiseverguetung'], 2)}/kWh · {L('created', 'erstellt')} {e(generated)}</p>
 <div class="grid">{kpi_html}</div>
-<h2>Verbrauch und Kosten pro Gerät</h2>
-<div class="card tbl"><table><thead><tr><th>Gerät</th><th></th><th>kWh</th><th>Kosten</th><th>Solar/Batterie</th><th>Datenabdeckung</th></tr></thead>
+<h2>{L('Consumption and cost per device', 'Verbrauch und Kosten pro Gerät')}</h2>
+<div class="card tbl"><table><thead><tr><th>{L('Device', 'Gerät')}</th><th></th><th>kWh</th><th>{L('Cost', 'Kosten')}</th><th>{L('Solar/battery', 'Solar/Batterie')}</th><th>{L('Data coverage', 'Datenabdeckung')}</th></tr></thead>
 <tbody>{trs}</tbody></table>
-<p class="mut">Kosten = Verbrauch × Netzanteil der jeweiligen Stunde × Strompreis. {'Nicht über Messsteckdosen erfasst: ' + fmt_num(other, 0) + ' kWh (u. a. ' + e(cfg.house.dle_name) + ', Licht, Herd).' if other is not None else ''}</p></div>
-<h2>Grundlast-Entwicklung</h2><div class="card">{_svg_baseload(rep['grundlast'])}
-<p>Median nachts: <b>{fmt_num(rep['grundlast_median'], 0)} W</b> (≈ {fmt_num((rep['grundlast_median'] or 0) * 8.76 * rep['preis'], 0)} €/Jahr){', davon keiner Steckdose zuzuordnen: <b>' + fmt_num(rep['unzugeordnet_median'], 0) + ' W</b>' if rep['unzugeordnet_median'] is not None else ' – nur Messsteckdosen, ohne Hauszähler nicht für das ganze Haus messbar'}.</p>{_baseload_trend(rep)}</div>
-<h2>Top-5-Sparpotenziale</h2><div class="card"><ol class="save">{saves or "<li class='mut'>Keine Sparpotenziale berechenbar.</li>"}</ol></div>
-<h2>Auffälligkeiten</h2><div class="card"><ul>{anoms}</ul></div>
-<h2>Hinweise zur Datenlage</h2><div class="card"><ul>{notes_html}</ul></div>
+<p class="mut">{L('Cost = consumption × grid share of each hour × electricity price.', 'Kosten = Verbrauch × Netzanteil der jeweiligen Stunde × Strompreis.')} {other_txt}</p></div>
+<h2>{L('Base load trend', 'Grundlast-Entwicklung')}</h2><div class="card">{_svg_baseload(rep['grundlast'], chart_label, night_label)}
+<p>{L('Median at night', 'Median nachts')}: <b>{fmt_num(gm, 0)} W</b> (≈ {eur((gm or 0) * 8.76 * rep['preis'])}{per_year}){base_tail}.</p>{_baseload_trend(rep)}</div>
+<h2>{L('Top 5 savings', 'Top-5-Sparpotenziale')}</h2><div class="card"><ol class="save">{saves or "<li class='mut'>" + L('No savings could be calculated.', 'Keine Sparpotenziale berechenbar.') + "</li>"}</ol></div>
+<h2>{L('Findings', 'Auffälligkeiten')}</h2><div class="card"><ul>{anoms}</ul></div>
+<h2>{L('Notes on the data', 'Hinweise zur Datenlage')}</h2><div class="card"><ul>{notes_html}</ul></div>
 </main></body></html>"""
 
 
@@ -358,31 +418,37 @@ def _baseload_trend(rep: dict) -> str:
     k = max(3, len(vals) // 3)
     first, last = median(vals[:k]), median(vals[-k:])
     diff = last - first
-    word = "gestiegen" if diff > 0 else "gesunken"
-    return (f"<p>Entwicklung im Monat: von {fmt_num(first, 0)} W (erstes Drittel) auf {fmt_num(last, 0)} W "
-            f"(letztes Drittel), also um {fmt_num(abs(diff), 0)} W {word}.</p>")
+    return L(f"<p>Trend this month: from {fmt_num(first, 0)} W (first third) to {fmt_num(last, 0)} W (last third), "
+             f"{'up' if diff > 0 else 'down'} by {fmt_num(abs(diff), 0)} W.</p>",
+             f"<p>Entwicklung im Monat: von {fmt_num(first, 0)} W (erstes Drittel) auf {fmt_num(last, 0)} W "
+             f"(letztes Drittel), also um {fmt_num(abs(diff), 0)} W {'gestiegen' if diff > 0 else 'gesunken'}.</p>")
 
 
 def summary_text(rep: dict) -> str:
     top = rep["geraete"][0] if rep["geraete"] else None
     parts = [f"{rep['titel']}:"]
     if rep["haus_kwh"] is None:
-        parts.append(f"Messsteckdosen {fmt_num(rep['steckdosen_kwh'], 0)} kWh, davon Netz "
-                     f"{fmt_num(rep['netzkosten'], 0)} €"
-                     + (f", Solar/Batterie ca. {fmt_num(100 * rep['solar_anteil'], 0)} %." if rep["solar_anteil"]
-                        is not None else "."))
-    elif rep["haus_kwh"] is not None:
-        parts.append(f"Haus {fmt_num(rep['haus_kwh'], 0)} kWh, Netz {fmt_num(rep['netz_kwh'] or 0, 0)} kWh "
-                     f"({fmt_num(rep['netzkosten'], 0)} €), Solar/Batterie {fmt_num(100 * (rep['solar_anteil'] or 0), 0)} %.")
+        solar = rep["solar_anteil"]
+        parts.append(L(f"metering plugs {fmt_num(rep['steckdosen_kwh'], 0)} kWh, grid cost {eur(rep['netzkosten'])}"
+                       + (f", solar/battery about {fmt_num(100 * solar, 0)} %." if solar is not None else "."),
+                       f"Messsteckdosen {fmt_num(rep['steckdosen_kwh'], 0)} kWh, davon Netz {eur(rep['netzkosten'])}"
+                       + (f", Solar/Batterie ca. {fmt_num(100 * solar, 0)} %." if solar is not None else ".")))
     else:
-        parts.append(f"Messsteckdosen {fmt_num(rep['steckdosen_kwh'], 0)} kWh ({fmt_num(rep['netzkosten'], 0)} €).")
+        sh = fmt_num(100 * (rep["solar_anteil"] or 0), 0)
+        parts.append(L(f"house {fmt_num(rep['haus_kwh'], 0)} kWh, grid {fmt_num(rep['netz_kwh'] or 0, 0)} kWh "
+                       f"({eur(rep['netzkosten'])}), solar/battery {sh} %.",
+                       f"Haus {fmt_num(rep['haus_kwh'], 0)} kWh, Netz {fmt_num(rep['netz_kwh'] or 0, 0)} kWh "
+                       f"({eur(rep['netzkosten'])}), Solar/Batterie {sh} %."))
     if top:
-        parts.append(f"Größter Verbraucher: {top['name']} {fmt_num(top['kwh'], 0)} kWh.")
+        parts.append(L(f"Biggest consumer: {top['name']} {fmt_num(top['kwh'], 0)} kWh.",
+                       f"Größter Verbraucher: {top['name']} {fmt_num(top['kwh'], 0)} kWh."))
     if rep["grundlast_median"]:
-        parts.append(f"Grundlast nachts {fmt_num(rep['grundlast_median'], 0)} W.")
+        parts.append(L(f"Night base load {fmt_num(rep['grundlast_median'], 0)} W.",
+                       f"Grundlast nachts {fmt_num(rep['grundlast_median'], 0)} W."))
     if rep["sparpotenziale"]:
         s = rep["sparpotenziale"][0]
-        parts.append(f"Größtes Sparpotenzial: {s['titel']} (≈ {fmt_num(s['eur'], 0)} €/Jahr).")
+        parts.append(L(f"Biggest saving: {s['titel']} (≈ {eur(s['eur'])}/year).",
+                       f"Größtes Sparpotenzial: {s['titel']} (≈ {eur(s['eur'])}/Jahr)."))
     return " ".join(parts)
 
 
@@ -390,6 +456,6 @@ def write_report(cfg: Config, store: Store, det: Detector, clock: Clock, year: i
     rep = build(cfg, store, det, clock, year, month)
     out = Path(cfg.report_dir)
     out.mkdir(parents=True, exist_ok=True)
-    p = out / f"bericht-{year}-{month:02d}.html"
-    p.write_text(render_html(rep, cfg, clock.local().strftime("%d.%m.%Y %H:%M")), encoding="utf-8")
+    p = out / (L("report", "bericht") + f"-{year}-{month:02d}.html")
+    p.write_text(render_html(rep, cfg, fmt_datetime(clock.local())), encoding="utf-8")
     return p, rep

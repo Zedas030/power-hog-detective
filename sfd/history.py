@@ -82,7 +82,7 @@ async def prelearn(cfg: Config, store: Store, det: Detector, clock: Clock, ha=No
                 total.sort()
                 store.add_samples(key, total)
                 report["geraete"][key] = len(total)
-                progress(f"  {d.name}: {len(total)} Messpunkte aus Prometheus")
+                progress(f"  {d.name}: {len(total)} samples from Prometheus")
             for role in HOUSE_ROLES:
                 ent = getattr(cfg.house, role)
                 if not ent:
@@ -93,7 +93,7 @@ async def prelearn(cfg: Config, store: Store, det: Detector, clock: Clock, ha=No
                 total.sort()
                 store.add_samples(f"{HOUSE}:{role}", total)
                 report["geraete"][f"{HOUSE}:{role}"] = len(total)
-                progress(f"  Haus/{role}: {len(total)} Messpunkte aus Prometheus")
+                progress(f"  house/{role}: {len(total)} samples from Prometheus")
         report["quellen"]["prometheus"] = True
 
     if ha is not None:
@@ -111,15 +111,15 @@ async def prelearn(cfg: Config, store: Store, det: Detector, clock: Clock, ha=No
                 rows = _resample_hold(rows, end)
                 store.add_samples(d.key, rows)
                 report["geraete"][d.key] = len(rows)
-                progress(f"  {d.name}: {len(rows)} Messpunkte aus dem HA-Recorder")
+                progress(f"  {d.name}: {len(rows)} samples from the HA recorder")
             report["quellen"]["recorder"] = True
         # long-term statistics: hourly energy for monthly reports (as far back as HA has them)
         n = await import_statistics(cfg, store, clock, ha)
         report["quellen"]["statistik_stunden"] = n
-        progress(f"  HA-Langzeitstatistik: {n} Stundenwerte übernommen")
+        progress(f"  HA long-term statistics: {n} hourly values imported")
 
     store.flush()
-    progress("  Merkmale je Tag berechnen und Erkennung nachspielen …")
+    progress("  Computing daily features and replaying the detection …")
     d = first
     det.silent = True
     try:

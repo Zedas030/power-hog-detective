@@ -19,7 +19,7 @@ def parse_duration(value, default_unit: str = "s") -> float | None:
         return float(value) * _UNIT[default_unit]
     m = _DUR.match(str(value))
     if not m:
-        raise ValueError(f"Ungültige Dauer: {value!r} (Beispiele: 90s, 15m, 3h, 2d)")
+        raise ValueError(f"Invalid duration: {value!r} (examples: 90s, 15m, 3h, 2d)")
     num = float(m.group(1).replace(",", "."))
     unit = (m.group(2) or default_unit).lower()
     return num * _UNIT[unit]
@@ -96,19 +96,7 @@ def weighted_median(pairs):
     return pairs[-1][0]
 
 
-def fmt_num(x, digits=0) -> str:
-    if x is None:
-        return "–"
-    s = f"{x:,.{digits}f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def fmt_minutes(minutes: float) -> str:
-    if minutes is None:
-        return "–"
-    if minutes >= 90:
-        return f"{fmt_num(minutes / 60, 1)} Std."
-    return f"{fmt_num(minutes, 0)} Min."
+from .i18n import fmt_minutes, fmt_num  # noqa: E402,F401  (language-aware)
 
 
 def fmt_clock(minute_of_day: float) -> str:
@@ -116,9 +104,10 @@ def fmt_clock(minute_of_day: float) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
-MONTHS = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September",
-          "Oktober", "November", "Dezember"]
+from .i18n import MONTHS as _M, WEEKDAYS as _W  # noqa: E402
+
+WEEKDAYS = _W["de"]  # kept for backwards compatibility; use i18n.weekday()
+MONTHS = _M["de"]
 
 
 def utc_iso(ts: float) -> str:

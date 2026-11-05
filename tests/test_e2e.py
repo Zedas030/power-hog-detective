@@ -11,7 +11,8 @@ from sfd.app import Service
 from sfd.config import load_config
 
 CFG = """
-home_assistant: {{url: "{url}", notify: notify.mobile_app_test}}
+language: de
+home_assistant: {{url: "{url}", notify: notify.mobile_app_test, sensor_praefix: stromfresser}}
 zeitzone: Europe/Berlin
 prometheus: {{url: null}}
 web: {{port: {port}}}

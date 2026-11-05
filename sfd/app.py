@@ -11,13 +11,24 @@ from .config import Config
 from .detector import HOUSE, HOUSE_ROLES, OPEN_STATES, Detector
 from .ha import HAClient
 from .notifier import Notifier
-from .report import summary_text, write_report
+from .report import report_title, summary_text, write_report
 from .store import Store
+from .config import TYPE_EN
+from .i18n import L
 from .util import Clock
 
 log = logging.getLogger("sfd")
 
 BAD_STATES = ("unavailable", "unknown", "none", "")
+
+_STATE_TEXT = {"unusual": ("unusual", "auffällig"), "learning": ("learning", "lernt"), "ok": ("ok", "ok"),
+               "normal": ("normal", "normal"), "no_data": ("no data", "keine Daten"),
+               "disconnected": ("disconnected", "keine Verbindung")}
+
+
+def state_text(code: str) -> str:
+    en, de = _STATE_TEXT.get(code, (code, code))
+    return L(en, de)
 
 
 def _ts(iso: str | None) -> float | None:
@@ -48,6 +59,11 @@ class Service:
         self.last_report = self.store.meta("last_report")
         self.errors = 0
         self.tasks: list[asyncio.Task] = []
+        p = cfg.sensor_prefix
+        self.feedback_event = f"{p}_feedback"
+        self.script_id = f"{p}_" + L("was_ok", "war_ok")
+        adr = (cfg.raw.get("web") or {}).get("adresse") or "localhost"
+        self.web_base = f"http://{adr}:{cfg.web_port}"
         # task intervals in seconds (tests shorten them)
         self.check_every = 30.0
         self.deliver_every = 20.0
@@ -80,7 +96,8 @@ class Service:
         self.tasks = [asyncio.create_task(c) for c in (
             self.ws_task(), self.poll_task(), self.flush_task(), self.check_task(), self.schedule_task(),
             self.deliver_task(), self.publish_task(), self.registry_task())]
-        log.info("Stromfresser-Detektiv %s läuft (Web/Metriken auf Port %s)", __version__, self.cfg.web_port)
+        log.info("%s %s running (web/metrics on port %s, language %s)", self.cfg.app_name, __version__,
+                 self.cfg.web_port, self.cfg.language)
         await self.stop.wait()
         for t in self.tasks:
             t.cancel()
@@ -99,7 +116,7 @@ class Service:
                 raise
             except Exception:  # noqa: BLE001
                 self.errors += 1
-                log.exception("Fehler in %s", name)
+                log.exception("Error in %s", name)
             await asyncio.sleep(seconds)
 
     # ------------------------------------------------------------------ HA websocket
@@ -109,11 +126,11 @@ class Service:
             reader = None
             try:
                 version = await self.ha.ws_connect()
-                log.info("Mit Home Assistant %s verbunden", version)
+                log.info("Connected to Home Assistant %s", version)
                 reader = asyncio.create_task(self.ha.ws_loop())
                 await self.ha.subscribe("state_changed", self.on_state_changed)
                 await self.ha.subscribe("mobile_app_notification_action", self.on_action)
-                await self.ha.subscribe("stromfresser_feedback", self.on_feedback_event)
+                await self.ha.subscribe(self.feedback_event, self.on_feedback_event)
                 await self.ha.subscribe("homeassistant_started", self.on_ha_started)
                 self.det.ha_state(True)
                 backoff = self.reconnect_min
@@ -122,11 +139,11 @@ class Service:
                 self.notify_unsent_findings()
                 asyncio.create_task(self.ensure_script())
                 await reader
-                log.warning("Verbindung zu Home Assistant getrennt")
+                log.warning("Connection to Home Assistant lost")
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                log.warning("Home Assistant nicht erreichbar: %s", e)
+                log.warning("Home Assistant unreachable: %s", e)
             finally:
                 if reader is not None and not reader.done():
                     reader.cancel()
@@ -138,7 +155,7 @@ class Service:
         """Findings opened while replaying history (pre-learning) have not been sent yet: send them once."""
         for a in self.store.anomalies(("offen",), test=0):
             if a["notified"] is None:
-                self.det.notify(f"Stromfresser-Detektiv: {self.det.name(a['dev'])}", a["message"], [a["id"]],
+                self.det.notify(f"{self.cfg.app_name}: {self.det.name(a['dev'])}", a["message"], [a["id"]],
                                 f"sfd-{a['dev']}")
                 self.store.update_anomaly(a["id"], notified=self.clock.now())
 
@@ -196,27 +213,28 @@ class Service:
         action = (event.get("data") or {}).get("action", "")
         if action.startswith("SFD_TEST_"):
             # button of a [TEST] scenario message: proves the round trip phone -> HA -> detector
-            log.info("Test-Feedback vom Handy empfangen: %s", action)
+            log.info("Test feedback received from the phone: %s", action)
             got = self.store.meta("test_feedback", [])
             self.store.set_meta("test_feedback", (got + [{"ts": self.clock.now(), "action": action}])[-20:])
-            self.notifier("[TEST] Stromfresser-Detektiv: Verstanden",
-                          f"Test-Feedback „War ok“ ({action}) ist beim Detektiv angekommen.", None, "sfd-test")
+            self.notifier(f"[TEST] {self.cfg.app_name}: " + L("Got it", "Verstanden"),
+                          L(f"Test feedback “Was ok” ({action}) reached the detective.",
+                            f"Test-Feedback „War ok“ ({action}) ist beim Detektiv angekommen."), None, "sfd-test")
             return
         if action.startswith("SFD_OK_"):
             done = self.det.feedback(action, source="handy")
-            log.info("Feedback vom Handy: %s -> %d Meldung(en)", action, len(done))
+            log.info("Feedback from the phone: %s -> %d finding(s)", action, len(done))
             await self.publish()
 
     async def on_feedback_event(self, event):
         data = event.get("data") or {}
-        target = data.get("meldung") or data.get("geraet")
+        target = data.get("finding") or data.get("meldung") or data.get("device") or data.get("geraet")
         if not target:
             return
         try:
-            done = self.det.feedback(str(target), source="ha", note=data.get("notiz"))
-            log.info("Feedback aus HA für %s: %d Meldung(en)", target, len(done))
+            done = self.det.feedback(str(target), source="ha", note=data.get("note") or data.get("notiz"))
+            log.info("Feedback from HA for %s: %d finding(s)", target, len(done))
         except KeyError as e:
-            log.warning("Feedback aus HA: %s", e)
+            log.warning("Feedback from HA: %s", e)
         await self.publish()
 
     async def on_ha_started(self, _event):
@@ -224,28 +242,33 @@ class Service:
         await self.publish()
 
     async def ensure_script(self):
-        """Create script.stromfresser_war_ok once (HA action for feedback). Never overwrites user changes."""
+        """Create the "was ok" script once (HA action for feedback). Never overwrites user changes."""
+        sid = self.script_id
         try:
-            if await self.ha.get_state("script.stromfresser_war_ok"):
+            if await self.ha.get_state(f"script.{sid}"):
                 return
             names = ", ".join(d.name for d in self.cfg.devices.values())
-            await self.ha.save_script("stromfresser_war_ok", {
-                "alias": "Stromfresser-Detektiv: war ok",
-                "description": "Meldet dem Stromfresser-Detektiv, dass die Auffälligkeit eines Geräts in Ordnung "
-                               "war. Er lernt das neue Verhalten dann dazu.",
+            dev_f, note_f = L("device", "geraet"), L("note", "notiz")
+            await self.ha.save_script(sid, {
+                "alias": f"{self.cfg.app_name}: " + L("was ok", "war ok"),
+                "description": L(f"Tells the {self.cfg.app_name} that a device's finding was fine. It then learns the "
+                                 f"new behaviour.",
+                                 f"Meldet dem {self.cfg.app_name}, dass die Auffälligkeit eines Geräts in Ordnung war. "
+                                 f"Er lernt das neue Verhalten dann dazu."),
                 "icon": "mdi:check-circle-outline",
                 "fields": {
-                    "geraet": {"name": "Gerät", "description": f"Name oder Schlüssel, z. B. {names}, Haus",
-                               "required": True, "selector": {"text": {}}},
-                    "notiz": {"name": "Notiz", "required": False, "selector": {"text": {}}},
+                    dev_f: {"name": L("Device", "Gerät"),
+                            "description": L(f"Name or key, e.g. {names}, House", f"Name oder Schlüssel, z. B. {names}, Haus"),
+                            "required": True, "selector": {"text": {}}},
+                    note_f: {"name": L("Note", "Notiz"), "required": False, "selector": {"text": {}}},
                 },
-                "sequence": [{"event": "stromfresser_feedback",
-                              "event_data": {"geraet": "{{ geraet }}", "notiz": "{{ notiz | default('') }}"}}],
+                "sequence": [{"event": self.feedback_event,
+                              "event_data": {dev_f: "{{ " + dev_f + " }}", note_f: "{{ " + note_f + " | default('') }}"}}],
                 "mode": "queued",
             })
-            log.info("HA-Skript script.stromfresser_war_ok angelegt")
+            log.info("HA script script.%s created", sid)
         except Exception as e:  # noqa: BLE001
-            log.warning("Skript für Feedback konnte nicht angelegt werden: %s", e)
+            log.warning("Could not create the feedback script: %s", e)
 
     # ------------------------------------------------------------------ periodic tasks
     async def poll_task(self):
@@ -273,7 +296,7 @@ class Service:
         async def check():
             self.det.live_check()
             self.det.ha_down_check()
-        await self._every(self.check_every, check, "Live-Prüfung", first_delay=self.check_every * 3)
+        await self._every(self.check_every, check, "live check", first_delay=self.check_every * 3)
 
     async def deliver_task(self):
         async def deliver():
@@ -285,7 +308,7 @@ class Service:
         await self._every(self.publish_every, self.publish, "HA-Sensoren", first_delay=min(20, self.publish_every))
 
     async def registry_task(self):
-        await self._every(self.cfg.registry_interval, self.check_registry, "Entitäten-Prüfung",
+        await self._every(self.cfg.registry_interval, self.check_registry, "entity check",
                           first_delay=self.cfg.registry_interval)
 
     async def schedule_task(self):
@@ -305,7 +328,7 @@ class Service:
             await self.monthly_report(y, m)
 
     async def daily_job(self, day):
-        log.info("Tagesauswertung für %s", day)
+        log.info("Daily evaluation for %s", day)
         start = self.store.meta("last_daily")
         days = [day]
         if start:
@@ -321,22 +344,21 @@ class Service:
             try:  # hourly statistics from HA: solar feed-in and gap filling for the reports
                 from .history import import_statistics
                 n = await import_statistics(self.cfg, self.store, self.clock, self.ha, since=day - timedelta(days=3))
-                log.info("HA-Statistik: %d Stundenwerte übernommen", n)
+                log.info("HA statistics: %d hourly values imported", n)
             except Exception as e:  # noqa: BLE001
-                log.warning("HA-Statistik nicht übernommen: %s", e)
+                log.warning("HA statistics not imported: %s", e)
         removed = await asyncio.to_thread(self.store.compact, self.clock.now(), self.cfg.raw_days,
                                           self.cfg.minute_days, self.cfg.quarter_days)
-        log.info("Verdichtung: %s", removed)
+        log.info("Compaction: %s", removed)
         self.last_daily = day.isoformat()
         self.store.set_meta("last_daily", self.last_daily)
         await self.publish()
 
     async def monthly_report(self, y, m):
         path, rep = await asyncio.to_thread(write_report, self.cfg, self.store, self.det, self.clock, y, m)
-        log.info("Monatsbericht %s geschrieben", path)
-        self.notifier(f"Stromfresser-Bericht {rep['titel']}", summary_text(rep) +
-                      f" Ganzer Bericht: http://<pi>:{self.cfg.web_port}/berichte/{path.name}".replace(
-                          "<pi>", self.cfg.raw.get("web", {}).get("adresse", "raspberrypi")), None, "sfd-bericht")
+        log.info("Monthly report written: %s", path)
+        self.notifier(report_title(self.cfg, rep), summary_text(rep) + L(" Full report: ", " Ganzer Bericht: ") +
+                      f"{self.web_base}/berichte/{path.name}", None, "sfd-bericht")
         self.last_report = f"{y}-{m:02d}"
         self.store.set_meta("last_report", self.last_report)
 
@@ -367,17 +389,21 @@ class Service:
                 continue
             target = HOUSE if dev.startswith(HOUSE) else dev
             if new_id:
-                msg = (f"{name}: Entität umbenannt – {ent} heißt jetzt {new_id}. Ich verfolge sie automatisch "
-                       f"weiter; bitte in config.yaml nachziehen.")
+                msg = L(f"{name}: entity renamed – {ent} is now {new_id}. I follow it automatically; please update "
+                        f"config.yaml.",
+                        f"{name}: Entität umbenannt – {ent} heißt jetzt {new_id}. Ich verfolge sie automatisch "
+                        f"weiter; bitte in config.yaml nachziehen.")
                 self._follow(ent, new_id)
                 self.store.set_entity(new_id, known[0], known[1])
             else:
-                msg = (f"{name}: Die Entität {ent} gibt es in Home Assistant nicht mehr – Gerät entfernt oder "
-                       f"umbenannt? Bitte config.yaml prüfen.")
+                msg = L(f"{name}: the entity {ent} no longer exists in Home Assistant – device removed or renamed? "
+                        f"Please check config.yaml.",
+                        f"{name}: Die Entität {ent} gibt es in Home Assistant nicht mehr – Gerät entfernt oder "
+                        f"umbenannt? Bitte config.yaml prüfen.")
                 lv = self.det.house_live if dev.startswith(HOUSE) else self.det.live.get(dev)
                 if lv is not None:
                     lv.entity_missing = True
-                    lv.missing_reason = f"die Entität {ent} fehlt"
+                    lv.missing_reason = L(f"the entity {ent} is missing", f"die Entität {ent} fehlt")
             self.det._open(target, metric, "system", msg)
 
     def _find_siblings(self, reg, by_id):
@@ -396,7 +422,7 @@ class Service:
                                     1 if any(k in x for k in ("stromstarke", "current")) else 2, x))
             if sib:
                 self.alive_map[sib[0]] = key
-                log.info("Lebenszeichen für %s: %s", d.name, sib[0])
+                log.info("Liveness sensor for %s: %s", d.name, sib[0])
 
     def _follow(self, old, new):
         if old in self.entity_map:
@@ -416,13 +442,13 @@ class Service:
         open_ = self.store.anomalies(OPEN_STATES, test=0)
         learning = {k: self.det.learning_progress(k) for k, _ in self.det.targets()}
         if any(a["state"] == "offen" for a in open_):
-            state = "auffällig"
+            state = "unusual"
         elif any(n < m for n, m in learning.values()):
-            state = "lernt"
+            state = "learning"
         else:
             state = "ok"
         if not self.det.ha_connected:
-            state = "keine Verbindung"
+            state = "disconnected"
         return {"state": state, "open": open_, "learning": learning}
 
     async def publish(self):
@@ -431,20 +457,23 @@ class Service:
         st = self.status()
         p = self.cfg.sensor_prefix
         open_ = [a for a in st["open"] if a["state"] == "offen"]
-        await self.ha.set_state(f"sensor.{p}_status", st["state"], {
-            "friendly_name": "Stromfresser-Detektiv Status", "icon": "mdi:magnify-scan",
-            "offene_meldungen": [a["message"] for a in open_][:10], "version": __version__,
-            "weboberflaeche": f"http://{self.cfg.raw.get('web', {}).get('adresse', 'raspberrypi')}:{self.cfg.web_port}/"})
-        await self.ha.set_state(f"sensor.{p}_offene_auffaelligkeiten", len(open_), {
-            "friendly_name": "Stromfresser offene Auffälligkeiten", "icon": "mdi:alert-circle-outline",
-            "state_class": "measurement"})
+        await self.ha.set_state(f"sensor.{p}_status", state_text(st["state"]), {
+            "friendly_name": f"{self.cfg.app_name} Status", "icon": "mdi:magnify-scan",
+            L("open_findings", "offene_meldungen"): [a["message"] for a in open_][:10], "version": __version__,
+            L("web_ui", "weboberflaeche"): f"{self.web_base}/"})
+        await self.ha.set_state(f"sensor.{p}_" + L("open_findings", "offene_auffaelligkeiten"), len(open_), {
+            "friendly_name": f"{self.cfg.short_name} " + L("open findings", "offene Auffälligkeiten"),
+            "icon": "mdi:alert-circle-outline", "state_class": "measurement"})
         yesterday = (self.clock.local().date() - timedelta(days=1)).isoformat()
         hd = self.store.daily_day(HOUSE, yesterday)
-        house_metrics = (("nacht_w", "Nächtliche Grundlast"), ("unzugeordnet_nacht_w", "Grundlast ohne Messsteckdose"))
-        for metric, label in (house_metrics if self.cfg.house.hausverbrauch else ()):
-            await self.ha.set_state(f"sensor.{p}_{'nachtgrundlast' if metric == 'nacht_w' else 'unzugeordnete_grundlast'}",
+        house_metrics = (("nacht_w", L("night_base_load", "nachtgrundlast"),
+                          L("night base load", "Nächtliche Grundlast")),
+                         ("unzugeordnet_nacht_w", L("unassigned_base_load", "unzugeordnete_grundlast"),
+                          L("base load without metering plug", "Grundlast ohne Messsteckdose")))
+        for metric, sid, label in (house_metrics if self.cfg.house.hausverbrauch else ()):
+            await self.ha.set_state(f"sensor.{p}_{sid}",
                                     hd.get(metric, "unknown"), {
-                                        "friendly_name": f"Stromfresser {label}", "unit_of_measurement": "W",
+                                        "friendly_name": f"{self.cfg.short_name} {label}", "unit_of_measurement": "W",
                                         "device_class": "power", "state_class": "measurement", "tag": yesterday})
         for key, typ in self.det.targets():
             if key == HOUSE:
@@ -453,10 +482,13 @@ class Service:
             n, mx = st["learning"][key]
             mine = [a for a in open_ if a["dev"] == key]
             lv = self.det.live[key]
-            state = "auffällig" if mine else ("lernt" if n < mx else "normal")
+            state = "unusual" if mine else ("learning" if n < mx else "normal")
             if lv.entity_missing or lv.state != "ok":
-                state = "keine Daten"
-            attrs = {"friendly_name": f"Stromfresser {d.name}", "icon": "mdi:power-plug-outline",
-                     "geraetetyp": typ, "lerntage": f"{n}/{mx}", "meldung": mine[0]["message"] if mine else None,
-                     "gestern": self.store.daily_day(key, yesterday)}
+                state = "no_data"
+            attrs = {"friendly_name": f"{self.cfg.short_name} {d.name}", "icon": "mdi:power-plug-outline",
+                     L("device_type", "geraetetyp"): TYPE_EN.get(typ, typ) if self.cfg.language == "en" else typ,
+                     L("learning_days", "lerntage"): f"{n}/{mx}",
+                     L("finding", "meldung"): mine[0]["message"] if mine else None,
+                     L("yesterday", "gestern"): self.store.daily_day(key, yesterday)}
+            state = state_text(state)
             await self.ha.set_state(f"sensor.{p}_{key}", state, attrs)

@@ -68,7 +68,7 @@ class HAClient:
     async def set_state(self, entity_id: str, state, attributes: dict) -> None:
         """Publish one of the tool's own sensors (sensor.<prefix>_*)."""
         if not entity_id.startswith("sensor."):
-            raise ReadOnlyViolation(f"Nur eigene Sensoren dürfen gesetzt werden, nicht {entity_id}")
+            raise ReadOnlyViolation(f"only own sensors may be set, not {entity_id}")
         s = await self._sess()
         async with s.post(f"{self.url}/api/states/{entity_id}", headers=self.headers,
                           data=json.dumps({"state": state, "attributes": attributes})) as r:
@@ -78,7 +78,7 @@ class HAClient:
     async def call_service(self, domain: str, service: str, data: dict) -> None:
         allowed = ALLOWED_SERVICES.get(domain, False)
         if allowed is False or (allowed is not None and service not in allowed):
-            raise ReadOnlyViolation(f"Dienst {domain}.{service} ist gesperrt: der Detektiv schaltet nichts.")
+            raise ReadOnlyViolation(f"service {domain}.{service} is blocked: the detective never switches anything.")
         s = await self._sess()
         async with s.post(f"{self.url}/api/services/{domain}/{service}", headers=self.headers,
                           data=json.dumps(data)) as r:
@@ -100,18 +100,18 @@ class HAClient:
         self.ws = await s.ws_connect(ws_url, heartbeat=30, max_msg_size=64 * 1024 * 1024)
         msg = await self.ws.receive_json()
         if msg.get("type") != "auth_required":
-            raise HAError(f"Unerwartete Antwort: {msg}")
+            raise HAError(f"unexpected answer: {msg}")
         await self.ws.send_json({"type": "auth", "access_token": self.token})
         msg = await self.ws.receive_json()
         if msg.get("type") != "auth_ok":
-            raise HAError("Anmeldung an Home Assistant fehlgeschlagen (Token prüfen)")
+            raise HAError("login to Home Assistant failed (check the token)")
         self._pending.clear()
         self._subs.clear()
         return msg.get("ha_version")
 
     async def command(self, payload: dict, timeout: float = 120.0):
         if payload.get("type") == "call_service":
-            raise ReadOnlyViolation("call_service über WebSocket ist gesperrt")
+            raise ReadOnlyViolation("call_service over WebSocket is blocked")
         mid = next(self._ids)
         fut = asyncio.get_running_loop().create_future()
         self._pending[mid] = fut
@@ -155,7 +155,7 @@ class HAClient:
                             if asyncio.iscoroutine(res):
                                 await res
                         except Exception:  # noqa: BLE001 - never let one event kill the loop
-                            log.exception("Fehler bei der Verarbeitung eines HA-Ereignisses")
+                            log.exception("error while handling an HA event")
         for fut in self._pending.values():
             if not fut.done():
                 fut.set_exception(HAError("WebSocket geschlossen"))

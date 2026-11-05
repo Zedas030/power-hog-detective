@@ -6,6 +6,7 @@ import logging
 from .config import Config
 from .ha import HAClient
 from .store import Store
+from .i18n import L
 from .util import Clock
 
 log = logging.getLogger("sfd.notify")
@@ -21,9 +22,9 @@ class Notifier:
         self.failed = 0
 
     def __call__(self, title: str, message: str, action: str | None, tag: str | None):
-        data = {"group": "stromfresser", "tag": tag or "stromfresser"}
+        data = {"group": self.cfg.sensor_prefix, "tag": tag or self.cfg.sensor_prefix}
         if action:
-            data["actions"] = [{"action": action, "title": "War ok"}]
+            data["actions"] = [{"action": action, "title": L("Was ok", "War ok")}]
         self.store.enqueue(self.clock.now(), title, message, data)
 
     async def deliver(self) -> int:
@@ -41,11 +42,11 @@ class Notifier:
                 if self.cfg.persistent_too:
                     await self.ha.call_service("persistent_notification", "create",
                                                {"title": title, "message": message,
-                                                "notification_id": data.get("tag", "stromfresser")})
+                                                "notification_id": data.get("tag", self.cfg.sensor_prefix)})
             except Exception as e:  # noqa: BLE001
                 self.store.mark_attempt(oid)
                 self.failed += 1
-                log.warning("Meldung %s nicht zugestellt (%s), neuer Versuch später", oid, e)
+                log.warning("Notification %s not delivered (%s), retrying later", oid, e)
                 break
             self.store.mark_sent(oid, self.clock.now())
             self.sent += 1

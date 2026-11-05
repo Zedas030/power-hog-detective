@@ -12,6 +12,7 @@ from sfd.store import Store  # noqa: E402
 from sfd.util import Clock  # noqa: E402
 
 BASE_YAML = """
+language: de
 home_assistant:
   url: http://127.0.0.1:1
   notify: notify.test

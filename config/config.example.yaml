@@ -1,180 +1,156 @@
 # =====================================================================================
-#  Stromfresser-Detektiv – Konfiguration
-#  Nach Änderungen:  docker compose restart   (im Ordner /opt/stromfresser-detektiv)
-#  Dauern: 90s, 15m, 3h, 2d   ·   Der HA-Token steht NICHT hier, sondern in ../.env
+#  Power Hog Detective – configuration
+#  After changes:  docker compose restart
+#  Durations: 90s, 15m, 3h, 2d   ·   The Home Assistant token is NOT here but in ../.env
+#  German keys (e.g. geraete, typ: zyklus) are accepted as aliases.
 # =====================================================================================
 
+language: en                            # en | de – notifications, web UI, reports, HA sensor states
+# app_name: Power Hog Detective         # title of notifications and pages
+# short_name: Power Hog                 # prefix of HA sensor names
+
 home_assistant:
-  url: http://127.0.0.1:8123            # Container läuft im Host-Netz des Pi
-  notify: notify.mobile_app_phone      # Meldungen + Monats-Kurzfassung (Handy, mit Knopf „War ok“)
-  zusaetzlich_persistent: false         # true = zusätzlich als Glocke in der HA-Oberfläche
-  sensor_praefix: stromfresser          # eigene Sensoren heißen sensor.stromfresser_*
+  url: http://127.0.0.1:8123            # the container runs in the host network
+  notify: notify.mobile_app_phone       # notifications (with a "Was ok" button on the companion app)
+  additional_persistent: false          # true = also as a notification in the HA UI
+  sensor_prefix: power_hog              # own sensors are called sensor.power_hog_*, event power_hog_feedback
 
 prometheus:
-  url: http://127.0.0.1:9090            # nur fürs Vorlernen aus der Vergangenheit (35 Tage, 15 s)
+  url: http://127.0.0.1:9090            # only used to pre-learn from the past (HA's Prometheus exporter)
 
 web:
-  port: 8101                            # Weboberfläche, /metrics, /health
-  adresse: 192.0.2.10              # nur für Links in Meldungen
+  port: 8101                            # web UI, /metrics, /health
+  address: 192.0.2.10                   # only used for links in notifications
 
-zeitzone: Europe/Berlin
+timezone: Europe/Berlin
 
-preise:
-  bezug_eur_kwh: 0.34                   # Strompreis (Arbeitspreis)
-  einspeisung_eur_kwh: 0.00             # Einspeisevergütung
+prices:
+  import_eur_kwh: 0.34                  # electricity price
+  export_eur_kwh: 0.00                  # feed-in tariff
 
-lernen:
-  min_tage: 14                          # erst danach wird verglichen und gemeldet
-  fenster_tage: 28                      # gleitendes Lernfenster: langsame Änderungen wandern ins Normal
-  max_ausschluss_tage: 14               # hält eine Abweichung so lange an, wird sie automatisch als neues Normal gelernt
-  min_tage_nach_feedback: 3             # nach „War ok“: so viele Tage neues Normal, bevor wieder verglichen wird
-  vorlernen_tage: 35                    # wie weit `stromfresser vorlernen` zurückschaut
+learning:
+  min_days: 14                          # compare and alert only after this many days
+  window_days: 28                       # sliding learning window: slow changes become the new normal
+  max_excluded_days: 14                 # a deviation lasting this long is learned as the new normal automatically
+  min_days_after_feedback: 3            # after "Was ok": days of the new normal before comparing again
+  prelearn_days: 35                     # how far `sfd prelearn` looks back
 
-erkennung:
-  stabil_tage: 3                        # Rauschunterdrückung: Meldung erst nach so vielen Tagen stabiler Abweichung
-  rel_schwelle: 0.25                    # mindestens 25 % Abweichung vom gelernten Normal …
-  z_schwelle: 3.0                       # … und mindestens 3 robuste Standardabweichungen
-  normal_tage_bis_entwarnung: 2         # so viele normale Tage, bis eine Auffälligkeit als erledigt gilt
-  entwarnung_melden: true               # „… ist wieder normal“ melden
-  programm_abweichung: 0.3              # Programm-Geräte: Lauf 30 % länger / mehr Energie als das gelernte Programm
-  programm_stabil_laeufe: 2             # … in mindestens 2 der letzten 3 Läufe
+detection:
+  stable_days: 3                        # noise suppression: alert only after this many days of stable deviation
+  rel_threshold: 0.25                   # at least 25 % away from the learned normal …
+  z_threshold: 3.0                      # … and at least 3 robust standard deviations
+  normal_days_to_clear: 2               # normal days until a finding counts as resolved
+  notify_recovery: true                 # send "… is back to normal"
+  program_deviation: 0.3                # program devices: a run 30 % longer / more energy than the learned program
+  program_stable_runs: 2                # … in at least 2 of the last 3 runs
 
-ueberwachung:                           # Selbstüberwachung
-  keine_daten_nach: 30m                 # Steckdose liefert keine frischen Werte mehr (nur in der Weboberfläche) …
-  keine_daten_melden: false             # … true = auch per Push (stört bei selten genutzten Geräten)
-  nicht_verfuegbar_nach: 30m            # Push, wenn die Steckdose so lange „unavailable“/„unknown“ ist (Verbindung weg)
-  ha_weg_nach: 5m                       # Home Assistant nicht erreichbar (Meldung kommt nach der Rückkehr)
-  hausdaten_weg_nach: 30m               # Growatt-Hausdaten fehlen
-  abfrageintervall: 60s                 # zusätzlich zur Live-Verbindung: Abfrage aller Entitäten
-  registry_pruefung: 10m                # Umbenennung/Fehlen von Entitäten erkennen
+monitoring:                             # self-monitoring
+  unavailable_after: 30m                # push when a plug is "unavailable"/"unknown" this long (connection lost)
+  no_data_after: 30m                    # plug sends no fresh values (shown in the web UI only) …
+  notify_no_data: false                 # … true = also push (annoying for rarely used devices)
+  ha_down_after: 5m                     # Home Assistant unreachable (notification is sent once it is back)
+  house_data_missing_after: 30m         # whole-house meter values missing
+  poll_interval: 60s                    # in addition to the live connection: poll all entities
+  registry_check: 10m                   # detect renamed or missing entities
 
-speicher:
-  pfad: /data/stromfresser.sqlite
-  schreibintervall: 60s                 # Messwerte gesammelt schreiben (schont die SD-Karte)
-  rohdaten_tage: 14                     # Rohwerte (alle Messpunkte)
-  minutenwerte_tage: 90                 # danach Minutenmittel
-  viertelstunden_tage: 730              # danach Viertelstundenmittel; Stundenenergie, Tagesmerkmale und Läufe bleiben dauerhaft
+storage:
+  path: /data/power-hog.sqlite
+  write_interval: 60s                   # write readings in batches (gentle on SD cards)
+  raw_days: 14                          # raw readings
+  minute_days: 90                       # then minute averages
+  quarter_hour_days: 730                # then 15-minute averages; hourly energy, daily features and runs are kept
 
-bericht:
-  tag: 1                                # Monatsbericht am 1. des Monats …
-  uhrzeit: "07:00"                      # … um 07:00 (HTML in der Weboberfläche + Kurzfassung per notify)
-  verzeichnis: /data/berichte
-  kuehlschrank_referenz_kwh_jahr: 150   # Vergleichswert für ein effizientes Kühlgerät
-  durchlauferhitzer_ersparnis_anteil: 0.3   # Annahme Sparduschkopf
-  grundlast_sparanteil: 0.3             # Annahme: so viel der nicht zugeordneten Grundlast ist vermeidbar
-  hinweise: []                          # eigene Hinweise, die in jedem Bericht stehen sollen
+report:
+  day: 1                                # monthly report on the 1st …
+  time: "07:00"                         # … at 07:00 (HTML in the web UI + summary via notify)
+  directory: /data/reports
+  fridge_reference_kwh_year: 150        # reference for an efficient fridge
+  water_heater_saving_share: 0.3        # assumption for a water-saving shower head
+  base_load_saving_share: 0.3           # assumption: share of the unassigned base load that is avoidable
+  notes: []                             # own notes printed in every report
 
-haus:
-  # Echter Hauszähler (Leistung in W). Hausverbrauch ist Pflicht, Netzbezug/Einspeisung optional.
-  # Stand 05.11.2026: In Home Assistant gibt es keinen. Die Growatt-Server-Integration liefert für
-  # Last, Netzbezug, Einspeisung und Batterie nur 0 W (geprüft April–November). Sobald z. B. ein
-  # IR-Lesekopf am Stromzähler oder ein Shelly 3EM in HA ist, hier eintragen und neu starten:
-  # Dann laufen nächtliche Grundlast, nicht zugeordnete Last, Solar/Netz-Anteil und Durchlauferhitzer.
-  hausverbrauch:                        # z. B. sensor.stromzaehler_leistung
-  netzbezug:                            # z. B. sensor.stromzaehler_bezug_leistung
-  einspeisung:                          # z. B. sensor.stromzaehler_einspeisung_leistung
-  solar_ins_haus:                       # Leistung, die PV/Batterie ins Haus speisen (Solar-Anteil im Bericht;
-    - sensor.noah_2000_output_power     # ohne Hauszähler als Schätzung). Zweiter NOAH hier ergänzen, sobald er Werte liefert.
-  nacht_von: "01:00"                    # Fenster für die nächtliche Grundlast
-  nacht_bis: "05:00"
-  durchlauferhitzer:                    # nicht in HA: wird aus großen, keiner Steckdose zuzuordnenden Lastspitzen geschätzt
-    aktiv: true
-    name: Durchlauferhitzer Bad
-    schwelle_w: 3000
+house:
+  # Whole-house meter (power in W). consumption is required, grid_import/grid_export are optional.
+  # With a meter: night base load of the house, load no plug sees, grid/solar share and a water-heater estimate.
+  consumption:                          # e.g. sensor.electricity_meter_power
+  grid_import:                          # e.g. sensor.electricity_meter_import_power
+  grid_export:                          # e.g. sensor.electricity_meter_export_power
+  solar_into_house:                     # power PV/battery feed into the house (solar share in the report;
+    - sensor.battery_output_power       # estimated when there is no meter)
+  night_from: "01:00"                   # window for the night base load
+  night_to: "05:00"
+  water_heater:                         # not in HA: estimated from large load peaks that no plug sees
+    enabled: true
+    name: Instantaneous water heater
+    threshold_w: 3000
 
 # -------------------------------------------------------------------------------------
-# Geräte. typ: zyklus | dauerlast | programm | nutzung | ladegeraet | zeitplan
-# Optional je Gerät:
-#   max_laufzeit: 4h          Meldung, wenn das Gerät länger am Stück läuft (Bügeleisen-Fall);
-#                             ohne Angabe wird die Grenze gelernt (zyklus, programm, nutzung, zeitplan)
-#   auto_laufzeit: false      gelernte Laufzeitgrenze abschalten
-#   null_meldung_nach: 30m    Meldung, wenn das Gerät trotz eingeschalteter Steckdose 0 W zieht
-#                             (Standard: dauerlast 15m, zyklus gelernt, sonst aus)
-#   an_schwelle_w: 15         ab dieser Leistung gilt das Gerät als „läuft“
-#   profil: kuehlgeraet | boiler | spuelmaschine | waschmaschine | trockner | drucker   (für passende Tipps)
-#   programme_pruefen: false  Programm-Erkennung abschalten (z. B. 3D-Drucker: jeder Druck ist anders)
-#   verlauf: [...]            alte Entitäts-IDs (vor einer Umbenennung) fürs Vorlernen aus Prometheus
-#   aktiv: false              Gerät vorübergehend ignorieren
+# Devices. type: cycle | continuous | program | usage | charger | schedule
+# Optional per device:
+#   max_runtime: 4h           alert when the device runs longer in one go (the iron case);
+#                             without it the limit is learned (cycle, program, usage, schedule)
+#   learn_runtime: false      switch off the learned runtime limit
+#   zero_alert_after: 30m     alert when the device draws 0 W although the plug is on
+#                             (default: continuous 15m, cycle learned, otherwise off)
+#   on_threshold_w: 15        from this power on the device counts as "running"
+#   profile: fridge | water_heater | dishwasher | washing_machine | dryer | printer   (fitting tips)
+#   detect_programs: false    switch off program detection (e.g. 3D printer: every print is different)
+#   liveness: sensor.x        sensor of the same plug that proves it is alive (default: found automatically,
+#                             e.g. the voltage sensor)
+#   history: [...]            old entity ids (before a rename) for pre-learning from Prometheus
+#   enabled: false            ignore the device for now
 # -------------------------------------------------------------------------------------
-geraete:
-  kuehlschrank:
-    name: Kühlschrank
-    typ: zyklus
-    profil: kuehlgeraet
-    leistung: sensor.kuhlschrank_derzeitiger_verbrauch
-    schalter: switch.kuhlschrank
-    verlauf:
-      - {entity: sensor.kuhlschrank_derzeitiger_verbrauch_2}
-  kueche_boiler:
-    name: Küche Boiler
-    typ: zyklus
-    profil: boiler
-    leistung: sensor.kuche_boiler_derzeitiger_verbrauch
-    schalter: switch.kuche_boiler
-    an_schwelle_w: 50
+devices:
+  fridge:
+    name: Fridge
+    type: cycle
+    profile: fridge
+    power: sensor.fridge_power
+    switch: switch.fridge
+  water_heater_kitchen:
+    name: Kitchen water heater
+    type: cycle
+    profile: water_heater
+    power: sensor.kitchen_boiler_power
+    switch: switch.kitchen_boiler
+    on_threshold_w: 50
   router:
     name: Router
-    typ: dauerlast
-    leistung: sensor.router_derzeitiger_verbrauch
-    schalter: switch.router
-  raspi:
-    name: Raspberry Pi
-    typ: dauerlast
-    leistung: sensor.1_derzeitiger_verbrauch
-    schalter: switch.1
-  luftreiniger:
-    name: Luftreiniger
-    typ: dauerlast
-    leistung: sensor.luftreiniger_derzeitiger_verbrauch
-    schalter: switch.luftreiniger
-  spuelmaschine:
-    name: Spülmaschine
-    typ: programm
-    profil: spuelmaschine
-    leistung: sensor.spulmaschine_derzeitiger_verbrauch
-    schalter: switch.spulmaschine
-    max_laufzeit: 5h
-  drucker_3d:
-    name: 3D-Drucker
-    typ: programm
-    profil: drucker
-    programme_pruefen: false
-    auto_laufzeit: false
-    max_laufzeit: 30h
-    leistung: sensor.drucker_3d_derzeitiger_verbrauch
-    schalter: switch.drucker_3d
-    verlauf:
-      - {entity: sensor.tent_derzeitiger_verbrauch}
+    type: continuous
+    power: sensor.router_power
+    switch: switch.router
+  dishwasher:
+    name: Dishwasher
+    type: program
+    profile: dishwasher
+    power: sensor.dishwasher_power
+    switch: switch.dishwasher
+    max_runtime: 5h
+  printer_3d:
+    name: 3D printer
+    type: program
+    profile: printer
+    detect_programs: false
+    learn_runtime: false
+    max_runtime: 30h
+    power: sensor.printer_power
   pc:
     name: PC
-    typ: nutzung
-    an_schwelle_w: 25
-    leistung: sensor.pc_derzeitiger_verbrauch
-    schalter: switch.pc
+    type: usage
+    on_threshold_w: 25
+    power: sensor.pc_power
+    switch: switch.pc
   tv:
     name: TV
-    typ: nutzung
-    leistung: sensor.tv_derzeitiger_verbrauch
-    schalter: switch.tv
-  tv_schlafzimmer:
-    name: TV Schlafzimmer
-    typ: nutzung
-    leistung: sensor.tv_schlafzimmer_derzeitiger_verbrauch
-    schalter: switch.tv_schlafzimmer
-    verlauf:
-      - {entity: sensor.waschmaschine_derzeitiger_verbrauch, friendly_name: "TV Schlafzimmer Derzeitiger Verbrauch"}
-  ipad_station:
-    name: iPad-Station
-    typ: ladegeraet
-    leistung: sensor.ipad_station_derzeitiger_verbrauch
-    schalter: switch.ipad_station
-    verlauf:
-      - {entity: sensor.staubsauger_derzeitiger_verbrauch, friendly_name: "Steckdose IPad Derzeitiger Verbrauch"}
-  zelt:
-    name: Zelt
-    typ: zeitplan
-    an_schwelle_w: 150                  # Lüfter läuft immer (~77 W), „an“ = Lampe
-    leistung: sensor.zelt_derzeitiger_verbrauch
-    schalter: switch.zelt
-    verlauf:
-      - {entity: sensor.kuhlschrank_derzeitiger_verbrauch, friendly_name: "Zelt Derzeitiger Verbrauch"}
+    type: usage
+    power: sensor.tv_power
+    switch: switch.tv
+  tablet_dock:
+    name: Tablet dock
+    type: charger
+    power: sensor.tablet_dock_power
+  grow_tent:
+    name: Grow tent
+    type: schedule
+    on_threshold_w: 150                 # fan always runs (~80 W), "on" = the lamp
+    power: sensor.grow_tent_power

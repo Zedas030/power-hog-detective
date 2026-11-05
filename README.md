@@ -1,203 +1,243 @@
-# Stromfresser-Detektiv
+# Power Hog Detective
 
-Lernt für jedes Gerät an einer Messsteckdose das normale Verbrauchsmuster und meldet ungewöhnliches Verhalten **mit Erklärung in Klartext**, zum Beispiel:
+*Deutsche Fassung: [README.de.md](README.de.md)*
 
-> Kühlschrank: Kompressor läuft seit 3 Tagen 42 % länger pro Zyklus (15 Min. statt 11 Min.) – Tür, Dichtung oder Vereisung prüfen.
+Learns the normal consumption pattern of every device behind a metering smart plug in Home Assistant and reports unusual behaviour **with a plain-language explanation**:
 
-> Nächtliche Grundlast seit Sonntag +36 W, keiner Steckdose zuzuordnen (136 W statt 100 W ohne Messsteckdose, ≈ 108 €/Jahr) – Geräte ohne Messsteckdose prüfen …
+> Fridge: compressor has been running 42 % longer per cycle for 3 days (15 min instead of 11 min) – check the door, the seal or for icing.
 
-> Spülmaschine läuft seit 5,0 Std. ununterbrochen (eingestellte Grenze 5,0 Std.) – vergessen auszuschalten?
+> Night base load +36 W since Sunday, not attributable to any plug (136 W instead of 100 W without a metering plug, ≈ €108/year) – check devices without a metering plug …
 
-Der Detektiv **liest nur**. Er schaltet keine Geräte. Technisch gesperrt sind alle Home-Assistant-Dienste außer `notify.*` und `persistent_notification.*`; ein Test prüft das. Er legt nur seine eigenen Sensoren `sensor.stromfresser_*` und einmalig das Skript `script.stromfresser_war_ok` an.
+> Dishwasher has been running continuously for 5.0 h (configured limit 5.0 h) – forgot to switch it off?
 
----
+Notifications, web UI, reports and Home Assistant sensor states are available in **English and German** (`language: en | de`).
 
-## Inhalt
-
-1. [Was er erkennt](#was-er-erkennt)
-2. [Wie er lernt](#wie-er-lernt)
-3. [Installation](#installation)
-4. [Secrets (HA-Token)](#secrets)
-5. [Konfiguration](#konfiguration)
-6. [Bedienung: Meldungen, „War ok“, CLI](#bedienung)
-7. [Home Assistant, Prometheus, Grafana](#home-assistant-prometheus-grafana)
-8. [Monatsbericht](#monatsbericht)
-9. [Daten und SD-Karte](#daten-und-sd-karte)
-10. [Tests und Abnahme-Szenarien](#tests)
-11. [Fehlersuche](#fehlersuche)
-12. [Grenzen](#grenzen)
+The detective is **read-only**. It never switches a device:
+- Every Home Assistant service except `notify.*` and `persistent_notification.*` is blocked in code, and a test checks this.
+- It writes only its own sensors `sensor.<prefix>_*`.
+- Once, it creates a feedback script `script.<prefix>_was_ok`.
 
 ---
 
-## Was er erkennt
+## Contents
 
-| Gerätetyp | Beispiele | Gelernte Merkmale (pro Tag) | Typische Meldung |
+1. [What it detects](#what-it-detects)
+2. [How it learns](#how-it-learns)
+3. [Requirements](#requirements)
+4. [Installation](#installation)
+5. [Secrets](#secrets)
+6. [Configuration](#configuration)
+7. [Using it: notifications, "Was ok", CLI](#using-it)
+8. [Home Assistant, Prometheus, Grafana](#home-assistant-prometheus-grafana)
+9. [Monthly report](#monthly-report)
+10. [Data and SD card](#data-and-sd-card)
+11. [Tests and acceptance scenarios](#tests)
+12. [Troubleshooting](#troubleshooting)
+13. [Limits](#limits)
+
+---
+
+## What it detects
+
+| Device type | Examples | Learned daily features | Typical finding |
 |---|---|---|---|
-| `zyklus` | Kühlschrank, Boiler | Zyklusdauer, Pause, Zyklen/Tag, Laufzeitanteil, kWh | Zyklen länger → Tür/Dichtung/Vereisung; Boiler heizt öfter nach → Warmwasser, tropfender Hahn |
-| `dauerlast` | Router, Server, Raspberry Pi | Grundlast (Median) | Grundlast +9 W seit Dienstag |
-| `programm` | Spülmaschine, Waschmaschine | erkennt Programme (Dauer + Energie), Läufe, Standby | Programm A braucht seit 2 Läufen 50 % mehr Energie → Heizstab verkalkt? |
-| `nutzung` | PC, TV | Standby-Leistung, Stunden an | Standby 4,7 W statt 0 W → Schnellstart/Updates? |
-| `ladegeraet` | iPad-Station | Leistung ohne Ladevorgang, Ladungen | zieht ohne Ladevorgang dauerhaft … |
-| `zeitplan` | Zelt, Aquarium | Einschaltzeit, Leistung im Betrieb | schaltet um 07:00 statt 06:00 ein → Zeitschaltuhr? |
-| Haus | Hauszähler (falls vorhanden) | nächtliche Grundlast, Anteil ohne Messsteckdose, große Lastspitzen (Durchlauferhitzer) | Nächtliche Grundlast seit Sonntag +36 W, keiner Steckdose zuzuordnen |
+| `cycle` | fridge, water heater | cycle length, pause, cycles/day, share of running time, kWh | longer cycles → door/seal/icing; heater reheats more often → hot water use, dripping tap |
+| `continuous` | router, server, Raspberry Pi | base load (median) | base load +9 W since Tuesday |
+| `program` | dishwasher, washing machine | recognises programs (duration + energy), runs, standby | Program A has needed 50 % more energy for 2 runs → scaled heating element? |
+| `usage` | PC, TV | standby power, hours on | standby 4.7 W instead of 0 W → quick start/updates? |
+| `charger` | tablet dock | power without charging, charges | draws power permanently without charging … |
+| `schedule` | grow tent, aquarium | switch-on time, power while running | switches on at 07:00 instead of 06:00 → timer? |
+| house | whole-house meter (optional) | night base load, share without metering plug, large load peaks (instantaneous water heater) | night base load +36 W, not attributable to any plug |
 
-Dazu kommen Live-Prüfungen, jede Minute:
+**Live checks**, every 30 seconds:
 
-- **Läuft ungewöhnlich lange** (Bügeleisen-Fall): Grenze per `max_laufzeit` je Gerät oder automatisch gelernt (längster üblicher Lauf × 1,2 bzw. 99-%-Wert × 1,5). Beim Kühlschrank heißt das: Kompressor läuft ohne Pause → Tür offen?
-- **Verbraucht plötzlich nichts mehr**, obwohl die Steckdose an ist (Defekt). Bei Dauerlast-Geräten nach 15 Min.; bei Zyklus-Geräten, wenn die übliche längste Pause dreifach überschritten ist. Eine absichtlich ausgeschaltete Steckdose löst keine Meldung aus.
-- **Selbstüberwachung**:
-  - Steckdose ist `unavailable`/`unknown`, also Verbindung weg: Push nach 30 Min. (`ueberwachung.nicht_verfuegbar_nach`).
-  - Steckdose liefert keine frischen Werte mehr, ist aber verbunden: steht nur still in der Weboberfläche, weil selten genutzte Geräte (z. B. die Spülmaschine) sonst ständig melden würden. Mit `ueberwachung.keine_daten_melden: true` kommt auch dafür ein Push.
-  - Home Assistant ist weg; die Meldung wird gepuffert und nach der Rückkehr zugestellt.
-  - Entitäts-ID umbenannt: Der Detektiv erkennt das über die `unique_id`, verfolgt die Entität automatisch weiter und meldet es.
-  - Entität fehlt ganz.
-  - Hausdaten fehlen oder sind unplausibel (Haus < Summe der Steckdosen).
+- **Runs unusually long** (the iron case). The limit is either `max_runtime` per device or learned (longest usual run × 1.2 or 99th percentile × 1.5). For a fridge: "compressor running without a pause → door open?"
+- **Suddenly draws nothing** although the plug is on, which points to a defect:
+  - continuous loads: after 15 min,
+  - cycle devices: when the longest usual pause is exceeded three times over.
 
-  Ob eine Steckdose noch lebt, sieht er auch dann, wenn sich die Leistung nicht ändert. Dafür beobachtet er einen „Lebenszeichen“-Sensor desselben Geräts (meist die Spannung) und ermittelt ihn automatisch aus der HA-Registry.
+  A plug switched off on purpose never alerts.
 
-## Wie er lernt
+**Self-monitoring:**
 
-- **Mindestens 14 Tage** Lernphase (`lernen.min_tage`), vorher keine Vergleichs-Meldungen.
-- **Gleitendes Fenster von 28 Tagen** (`lernen.fenster_tage`): Normal ist der Median der letzten 28 gültigen Tage. Langsame, gewollte Änderungen wandern so ins Normal und lösen keinen Alarm aus.
-- **Rauschunterdrückung:** Ein Tag gilt als auffällig, wenn er mindestens 25 % *und* 3 robuste Standardabweichungen (MAD) vom Normal abweicht und eine Mindestgröße überschreitet (z. B. 2 Min. Zyklusdauer, 3 W Grundlast). Gemeldet wird erst nach **3 Tagen in Folge** (`erkennung.stabil_tage`). Harmlose Richtungen (weniger Verbrauch, längere Pausen) melden nichts.
-- **Neues Normal:**
-  - nach „War ok“ sofort: Der Vergleich startet am Beginn der Abweichung neu und braucht 3 Tage,
-  - ohne Feedback automatisch, wenn eine Abweichung 14 Tage anhält (mit Hinweis).
-- **Entwarnung:** Nach 2 normalen Tagen gilt eine Auffälligkeit als erledigt; auf Wunsch kommt eine Meldung „… ist wieder normal“.
-- **Vorlernen aus der Vergangenheit:** `stromfresser vorlernen` holt 35 Tage aus Prometheus (alle 15 s, genau genug für Kompressorzyklen). Fehlt etwas, nimmt er den HA-Recorder, außerdem die stündliche HA-Langzeitstatistik seit April für die Berichte. Alte Entitäts-IDs (vor einer Umbenennung) stehen je Gerät unter `verlauf:`.
+- **Plug unavailable** (`unavailable`/`unknown` in HA, the connection is lost): push notification after 30 min.
+- **Plug sends no fresh values** but is connected: shown quietly in the web UI only. Rarely used devices (e.g. a dishwasher) would otherwise keep alerting. Set `notify_no_data: true` to push these too.
+- **Home Assistant unreachable:** the notification is buffered and sent once HA is back.
+- **Entity renamed:** detected via the `unique_id`, followed automatically and reported.
+- **Entity missing.**
+- **House data missing or implausible** (house below the sum of the plugs).
+
+**Liveness:** Home Assistant does not refresh `last_reported` of a power sensor while its value stays the same. The detective therefore watches a sibling sensor of the same device (usually the voltage) and finds it automatically in the entity registry.
+
+## How it learns
+
+- **At least 14 days** of learning (`learning.min_days`); no comparison alerts before that.
+- **Sliding 28-day window** (`learning.window_days`): the normal is the median of the last 28 valid days. Slow, intended changes become the normal and never alert.
+- **Noise suppression:** a day counts as unusual when it differs from the normal by all of the following:
+  - at least 25 %,
+  - at least 3 robust standard deviations (MAD),
+  - a minimum size (e.g. 2 min cycle length, 3 W base load).
+
+  An alert needs **3 days in a row** (`detection.stable_days`). Harmless directions (less consumption, longer pauses) never alert.
+- **New normal:**
+  - "Was ok" makes the new behaviour normal at once: comparison restarts at the beginning of the deviation and needs 3 days.
+  - Without feedback this happens automatically when a deviation lasts 14 days, with a short notice.
+- **All clear:** after 2 normal days a finding is resolved; optionally "… is back to normal" is sent.
+- **Pre-learning from the past:** `sfd prelearn` uses three sources:
+  - 35 days from Prometheus via HA's Prometheus exporter, every 15 s, fine enough for compressor cycles,
+  - the HA recorder as a fallback,
+  - hourly HA long-term statistics for the reports.
+
+  Old entity ids (before a rename) go under `history:` per device.
+
+## Requirements
+
+- Home Assistant with power sensors in W for each smart plug (tested with TP-Link/Tapo P110 via the `tplink` integration). A switch entity per plug is optional; it tells "switched off" apart from "defect".
+- A notify service, e.g. the companion app `notify.mobile_app_<phone>` (for the "Was ok" button).
+- Docker with the Compose plugin (tested on a Raspberry Pi 4, arm64).
+- Optional:
+  - Prometheus scraping HA (`prometheus:` integration), for pre-learning,
+  - Grafana,
+  - a whole-house meter in HA (IR reading head on the electricity meter, Shelly 3EM, …).
 
 ## Installation
 
-Auf dem Raspberry Pi (Docker mit Compose-Plugin):
-
 ```bash
-sudo mkdir -p /opt/stromfresser-detektiv && sudo chown $USER /opt/stromfresser-detektiv
-# Projektdateien nach /opt/stromfresser-detektiv kopieren, dann:
-cd /opt/stromfresser-detektiv
-cp config/config.example.yaml config/config.yaml   # anpassen, siehe unten
-cp .env.example .env && chmod 600 .env              # Token eintragen, siehe "Secrets"
-mkdir -p data && sudo chown 10001:10001 data         # der Container läuft als Benutzer 10001
-docker build --target test -t stromfresser-detektiv:test .   # führt alle Tests aus
-docker compose run --rm stromfresser-detektiv selbsttest     # Verbindung + Entitäten prüfen
-docker compose run --rm stromfresser-detektiv vorlernen      # Historie einlesen (ca. 5 Min.)
+git clone https://github.com/Zedas030/power-hog-detective.git /opt/power-hog-detective
+cd /opt/power-hog-detective
+cp config/config.example.yaml config/config.yaml   # adjust, see "Configuration"
+cp .env.example .env && chmod 600 .env              # put the token in, see "Secrets"
+mkdir -p data && sudo chown 10001:10001 data         # the container runs as user 10001
+docker build --target test -t power-hog-detective:test .        # runs all tests
+docker compose run --rm power-hog-detective selftest            # connection + entities
+docker compose run --rm power-hog-detective prelearn            # read history (about 5 min)
 docker compose up -d --build
 ```
 
-Was die `docker-compose.yml` festlegt:
+What `docker-compose.yml` sets up:
 
 - Autostart (`restart: unless-stopped`).
-- Ressourcenlimits: 256 MB RAM, 0,5 CPU, 64 Prozesse.
-- Schreibgeschütztes Dateisystem, keine Capabilities.
-- Log-Rotation: 3 × 10 MB.
-- Host-Netz, damit der Container HA und Prometheus unter `127.0.0.1` erreicht.
-- Healthcheck auf `/health`.
+- Limits: 256 MB RAM, 0.5 CPU, 64 processes.
+- Read-only root filesystem, no capabilities.
+- Log rotation: 3 × 10 MB.
+- Host network, so the container reaches HA and Prometheus on `127.0.0.1`.
+- Healthcheck on `/health`.
 
-Weboberfläche: `http://<pi>:8101/` zeigt Status, offene Auffälligkeiten mit Knopf „War ok“, Geräte, letzte Meldungen und Monatsberichte.
+Web UI: `http://<host>:8101/` shows status, open findings with a "Was ok" button, devices, recent notifications and monthly reports.
 
-Update: Dateien ersetzen, dann `docker compose up -d --build`. Daten und Gelerntes bleiben in `data/`.
+To update: `git pull && docker compose up -d --build`. Data and everything learned stay in `data/`.
 
 ## Secrets
 
-| Was | Wo | Hinweis |
+| What | Where | Notes |
 |---|---|---|
-| Home-Assistant-Token | `/opt/stromfresser-detektiv/.env` → `HA_TOKEN=…` | Datei `chmod 600`, nie in `config.yaml` |
+| Home Assistant token | `.env` next to `docker-compose.yml` → `HA_TOKEN=…` | file `chmod 600`, never in `config.yaml`, never commit it |
 
-**Token anlegen bzw. tauschen (rotieren):**
+**Create or rotate the token:**
 
-1. In HA: unten links Profil → Reiter *Sicherheit* → *Langlebige Zugriffstoken* → *Token erstellen*, Name z. B. `stromfresser-detektiv`.
-2. Den Token in `.env` hinter `HA_TOKEN=` eintragen (Datei bleibt `chmod 600`).
-3. `docker compose up -d` (der Container liest die `.env` beim Start).
-4. Prüfen: `docker compose exec stromfresser-detektiv python -m sfd selbsttest`.
-5. Den alten Token in HA unter *Langlebige Zugriffstoken* löschen.
+1. In HA open your profile (bottom left) → tab *Security* → *Long-lived access tokens* → *Create token*, e.g. named `power-hog-detective`.
+2. Put it into `.env` after `HA_TOKEN=` (the file stays `chmod 600`).
+3. Run `docker compose up -d` (the container reads `.env` on start).
+4. Check: `docker compose exec power-hog-detective python -m sfd selftest`.
+5. Delete the old token in HA under *Long-lived access tokens*.
 
-Der Token braucht Lesezugriff auf Zustände, Registry, Verlauf und Statistik und muss `notify` aufrufen dürfen. Einmalig legt er das Skript `script.stromfresser_war_ok` an. HA kennt keine rein lesenden Token; die Sperre gegen Schalten steckt im Detektiv selbst.
+The token needs read access to states, registry, history and statistics and must be allowed to call `notify`. HA has no read-only tokens; the protection against switching lives in the detective itself.
 
-## Konfiguration
+## Configuration
 
-Alles steht kommentiert in `config/config.yaml`. Die wichtigsten Stellen:
+Everything is commented in [`config/config.example.yaml`](config/config.example.yaml). The important parts:
 
 ```yaml
+language: en                          # en | de
 home_assistant:
-  notify: notify.mobile_app_phone      # Meldungen mit Knopf "War ok"
-preise:
-  bezug_eur_kwh: 0.34
-  einspeisung_eur_kwh: 0.00
-geraete:
-  kuehlschrank:
-    name: Kühlschrank
-    typ: zyklus                        # zyklus | dauerlast | programm | nutzung | ladegeraet | zeitplan
-    profil: kuehlgeraet                # passende Tipps in den Meldungen
-    leistung: sensor.kuehlschrank_leistung
-    schalter: switch.kuehlschrank      # damit "aus" nicht als Defekt zählt
-  buegeleisen:
-    name: Bügeleisen
-    typ: nutzung
-    leistung: sensor.buegeleisen_leistung
-    max_laufzeit: 45m                  # Bügeleisen-Fall
+  notify: notify.mobile_app_phone     # notifications with a "Was ok" button
+prices:
+  import_eur_kwh: 0.34
+  export_eur_kwh: 0.00
+devices:
+  fridge:
+    name: Fridge
+    type: cycle                       # cycle | continuous | program | usage | charger | schedule
+    profile: fridge                   # fitting tips in the messages
+    power: sensor.fridge_power
+    switch: switch.fridge             # so that "off" is not taken for a defect
+  iron:
+    name: Iron
+    type: usage
+    power: sensor.iron_power
+    max_runtime: 45m                  # the iron case
 ```
 
-Ein neues Gerät eintragen und `docker compose restart` ausführen. Es lernt dann ab sofort; mit `vorlernen` auch rückwirkend.
+Add a device and run `docker compose restart`. It starts learning at once, and with `prelearn` also from the past.
 
-**Hauszähler:** Unter `haus:` einen Leistungssensor des ganzen Hauses eintragen (z. B. IR-Lesekopf am Stromzähler oder Shelly 3EM). Dann laufen nächtliche Grundlast, nicht zugeordnete Last, Netz/Solar-Anteil und die Schätzung des Durchlauferhitzers. Ohne Zähler ruht dieser Teil. Der Solaranteil wird dann aus `solar_ins_haus` (z. B. NOAH-Ausgangsleistung) geschätzt.
+**Whole-house meter:** under `house:` set a power sensor for the whole house, e.g. from an IR reading head or a Shelly 3EM. This enables:
+- night base load of the house,
+- load that no plug sees,
+- grid/solar share,
+- the instantaneous water heater estimate.
 
-## Bedienung
+Without a meter this part sleeps. The solar share is then estimated from `solar_into_house` (e.g. the output power of a battery/micro inverter running zero export).
 
-**Meldungen** kommen über den eingestellten `notify`-Dienst. Am Handy hat jede Auffälligkeit den Knopf **„War ok“**.
+German keys from earlier versions (`geraete`, `typ: zyklus`, …) keep working as aliases.
 
-**„War ok“ (Feedback)** geht auf vier Wegen. Der Detektiv übernimmt das neue Verhalten dann als normal:
+## Using it
 
-| Weg | So geht's |
+**Notifications** go to the configured `notify` service. On the phone every finding has a **"Was ok"** button.
+
+**"Was ok" (feedback)** works in four ways. The detective then learns the new behaviour as normal.
+
+| Way | How |
 |---|---|
-| Handy | Knopf „War ok“ in der Benachrichtigung |
-| HA-Aktion | Aktion `script.stromfresser_war_ok` mit `geraet: Kühlschrank` (Name oder Schlüssel, `Haus` für das Haus) und optional `notiz`; nutzbar in Dashboards und Automationen |
-| Weboberfläche | Knopf „War ok“ neben der Auffälligkeit |
-| CLI | `docker compose exec stromfresser-detektiv python -m sfd ok <ID oder Gerät> --notiz "…"` |
+| Phone | "Was ok" button in the notification |
+| HA action | `script.<prefix>_was_ok` with `device: Fridge` (name or key, `House` for the house) and optional `note`. Use it in dashboards and automations. Alternatively fire the event `<prefix>_feedback` yourself. |
+| Web UI | "Was ok" button next to the finding |
+| CLI | `docker compose exec power-hog-detective python -m sfd ok <id or device> --note "…"` |
 
-Was „War ok“ bewirkt:
+What "Was ok" does:
 
-- Tagesmerkmale: neues Normal ab Beginn der Abweichung.
-- Programme: Die abweichenden Läufe werden zum Programm.
-- „läuft zu lange“: Die Grenze steigt auf die beobachtete Laufzeit × 1,5.
-- Ausfälle („keine Werte“, „0 W“): stumm, bis das Problem vorbei ist. Danach kann es wieder melden.
+- **Daily features:** the new normal starts at the beginning of the deviation.
+- **Programs:** the deviating runs become the program.
+- **"Runs too long":** the limit rises to the observed runtime × 1.5.
+- **Outages** ("no values", "0 W"): muted until the problem is over; after that the finding can alert again.
 
-**CLI** (im Container, `docker compose exec stromfresser-detektiv python -m sfd …`):
+**CLI** (inside the container: `docker compose exec power-hog-detective python -m sfd …`):
 
-| Befehl | Zweck |
+| Command | Purpose |
 |---|---|
-| `status` | Lernfortschritt, Merkmale von gestern, offene Auffälligkeiten |
-| `meldungen` | letzte Auffälligkeiten mit ID und Zustand |
-| `ok <ID/Gerät>` | Feedback „War ok“ |
-| `vorlernen [--tage 35] [--melden]` | aus Prometheus/HA-Historie lernen |
-| `bericht [--monat 2026-10] [--senden]` | Monatsbericht erzeugen (und Kurzfassung schicken) |
-| `szenario kompressor\|grundlast\|laufzeit\|alle [--senden]` | Abnahme-Szenarien, siehe unten |
-| `statistik-import` | HA-Stundenstatistik nachladen |
-| `selbsttest` | Token und Entitäten prüfen |
+| `status` | learning progress, yesterday's features, open findings |
+| `findings` | recent findings with id and state |
+| `ok <id/device>` | feedback "Was ok" |
+| `prelearn [--days 35] [--notify]` | learn from Prometheus/HA history |
+| `report [--month 2026-10] [--send]` | write a monthly report (and send the summary) |
+| `scenario compressor\|baseload\|runtime\|all [--send]` | acceptance scenarios, see below |
+| `import-statistics` | reload hourly statistics from HA |
+| `selftest` | check token and entities |
 
 ## Home Assistant, Prometheus, Grafana
 
-**HA-Sensoren** (werden jede Minute und nach jedem HA-Neustart neu gesetzt):
+**HA sensors** are set every minute and after each HA restart. Names shown with `language: en`; with `de` they are German.
 
-- `sensor.stromfresser_status`: `ok` / `lernt` / `auffällig` / `keine Verbindung`; Attribut `offene_meldungen`.
-- `sensor.stromfresser_offene_auffaelligkeiten`: Anzahl.
-- `sensor.stromfresser_<gerät>`: `normal` / `lernt` / `auffällig` / `keine Daten`; Attribute Gerätetyp, Lerntage, aktuelle Meldung, Merkmale von gestern.
-- mit Hauszähler zusätzlich `sensor.stromfresser_nachtgrundlast` und `sensor.stromfresser_unzugeordnete_grundlast`.
+- `sensor.<prefix>_status`: `ok` / `learning` / `unusual` / `disconnected`, attribute `open_findings`.
+- `sensor.<prefix>_open_findings`: count.
+- `sensor.<prefix>_<device>`: `normal` / `learning` / `unusual` / `no data`. Attributes: device type, learning days, current finding, yesterday's features.
+- With a house meter also `sensor.<prefix>_night_base_load` and `sensor.<prefix>_unassigned_base_load`.
 
-**Prometheus:** `http://<pi>:8101/metrics`. Scrape-Eintrag:
+**Prometheus:** `http://<host>:8101/metrics`. Scrape config:
 
 ```yaml
-  - job_name: stromfresser_detektiv
+  - job_name: power_hog_detective
     scrape_interval: 60s
     static_configs:
       - targets: ['localhost:8101']
 ```
 
-Metriken (`sfd_…`):
+Metrics (`sfd_…`):
 
 - `device_power_watts`
 - `device_last_value_age_seconds`
 - `device_available`
 - `device_running_seconds`
-- `feature_value` / `feature_baseline` (Merkmal gegen gelerntes Normal)
+- `feature_value` / `feature_baseline` (feature against the learned normal)
 - `learning_days`
 - `anomalies_open`
 - `house_night_base_watts`
@@ -205,83 +245,88 @@ Metriken (`sfd_…`):
 - `outbox_pending`
 - `db_size_bytes`
 
-**Grafana:** `grafana/stromfresser-detektiv.json` importieren oder in den Provisioning-Ordner legen. Die Datenquelle ist eine Variable. Neu erzeugen mit `python grafana/make_dashboard.py`.
+**Grafana:** import [`grafana/power-hog-detective.json`](grafana/power-hog-detective.json) or put it into a provisioning folder. The data source is a variable. Regenerate it with `python grafana/make_dashboard.py`.
 
-## Monatsbericht
+## Monthly report
 
-Am 1. jedes Monats um 07:00 (einstellbar) schreibt der Detektiv `data/berichte/bericht-JJJJ-MM.html` (auch in der Weboberfläche) und schickt eine Kurzfassung per `notify`. Der Bericht enthält:
+On the 1st of every month at 07:00 (configurable) the detective writes `data/reports/report-YYYY-MM.html` (also linked in the web UI) and sends a summary via `notify`. The report contains:
 
-- Verbrauch und Kosten pro Gerät; Kosten = kWh × Netzanteil der jeweiligen Stunde × Strompreis.
-- Anteil aus Solar/Batterie gegenüber Netz: mit Hauszähler gemessen, sonst aus der NOAH-Ausgangsleistung geschätzt.
-- Entwicklung der Grundlast im Monat.
-- Top-5-Sparpotenziale mit €/Jahr und Rechenweg. Mögliche Posten:
-  - Standby abschalten,
-  - Nutzungsgeräte, die nachts laufen,
-  - Kühlgerät über einem Referenzwert,
-  - Lasten in Sonnenstunden verlegen,
-  - nicht zugeordnete Grundlast,
-  - Durchlauferhitzer.
-- Auffälligkeiten des Monats und Hinweise zur Datenlage.
+- **Consumption and cost per device.** Cost = kWh × grid share of that hour × price.
+- **Solar/battery share versus grid:** measured with a house meter, otherwise estimated.
+- **Base load trend** over the month.
+- **Top 5 savings** in €/year with the calculation behind each. Possible items:
+  - switch off standby,
+  - usage devices running at night,
+  - fridge above a reference value,
+  - move flexible loads into sunny hours,
+  - unassigned base load,
+  - instantaneous water heater.
+- **Findings of the month and notes on the data.**
 
-Von Hand: `python -m sfd bericht --monat 2026-10`.
+By hand: `python -m sfd report --month 2026-10`.
 
-## Daten und SD-Karte
+## Data and SD card
 
-SQLite unter `data/stromfresser.sqlite` (WAL-Modus). Messwerte werden gesammelt und einmal pro Minute in einem Rutsch geschrieben.
+SQLite in `data/` (WAL mode). Readings are collected and written in one batch per minute.
 
-Täglich um 00:20 läuft die Tagesauswertung. Danach wird verdichtet:
+The daily evaluation runs at 00:20 and then condenses the data:
 
-| Stufe | Aufbewahrung (einstellbar unter `speicher:`) |
+| Tier | Kept (configurable under `storage:`) |
 |---|---|
-| Rohwerte | 14 Tage |
-| Minutenmittel | 90 Tage |
-| Viertelstundenmittel | 2 Jahre |
-| Stundenenergie, Tagesmerkmale, Läufe, Meldungen | dauerhaft (wenige MB pro Jahr) |
+| raw readings | 14 days |
+| minute averages | 90 days |
+| 15-minute averages | 2 years |
+| hourly energy, daily features, runs, findings | forever (a few MB per year) |
 
-Größe nach 35 Tagen Vorlernen: etwa 85 MB, danach weitgehend stabil.
+Size after pre-learning 35 days of 12 plugs: about 85 MB, then roughly stable.
 
 ## Tests
 
 ```bash
-docker build --target test -t stromfresser-detektiv:test .       # Unit- und End-to-End-Tests
-python -m pytest -q tests/                                       # lokal (requirements.txt + requirements-dev.txt)
+docker build --target test -t power-hog-detective:test .     # unit and end-to-end tests
+pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q tests/
 ```
 
-Die Testdateien:
+The test files:
 
-- `tests/test_detection.py`: Erkennungslogik mit synthetischen Verbrauchsdaten, darunter Kompressorzyklen, Grundlast, Laufzeit, Defekt, Ausfall, Feedback, langsame Drift, Programme, Zeitpläne, Plausibilität und Stummschaltung.
-- `tests/test_report.py`: Monatsbericht.
-- `tests/test_e2e.py`: der echte Dienst gegen ein nachgebautes Home Assistant (WebSocket + REST). Abgedeckt sind:
-  - Meldung mit Knopf, Knopf-Rückmeldung,
-  - Umbenennung einer Entität,
-  - Steckdose verstummt, Lebenszeichen über die Spannung,
-  - Hausdaten weg, Feedback über die HA-Aktion,
-  - HA-Ausfall, Web, Metriken,
-  - es werden nur `notify`-Dienste aufgerufen.
+- **`tests/test_detection.py`:** detection logic on synthetic consumption data. It covers compressor cycles, base load, runtime, defect, outage, feedback, slow drift, programs, schedules, plausibility and muting.
+- **`tests/test_report.py`:** monthly report and metrics.
+- **`tests/test_english.py`:** English texts, English and German config keys.
+- **`tests/test_e2e.py`:** the real service against a fake Home Assistant (WebSocket + REST). It covers:
+  - finding with button and button round trip,
+  - entity rename,
+  - silent plug and liveness via the voltage sensor,
+  - missing house data and feedback via the HA event,
+  - HA outage, web UI and metrics,
+  - only `notify` services called.
 
-**Abnahme-Szenarien auf echten Lerndaten** (laufen auf einer Kopie der Datenbank; mit `--senden` kommen sie als `[TEST]` aufs Handy):
+**Acceptance scenarios on your real learned data.** They run on a copy of the database; with `--send` they arrive on the phone as `[TEST]`.
 
 ```bash
-docker compose exec stromfresser-detektiv python -m sfd szenario alle --senden
+docker compose exec power-hog-detective python -m sfd scenario all --send
 ```
 
-| Szenario | Was passiert |
+| Scenario | What happens |
 |---|---|
-| `kompressor` | Kühlschrank-Zyklen 40 % länger als gelernt, 5 Tage. Danach „War ok“ und 5 weitere Tage ohne Meldung. |
-| `grundlast` | Simulierter Hauszähler über den echten Steckdosenverläufen, nach 16 Lerntagen +35 W ohne Messsteckdose. |
-| `laufzeit` | Gerät mit `max_laufzeit` läuft über die Grenze und wird dann ausgeschaltet. |
+| `compressor` | fridge cycles 40 % longer than learned for 5 days, then "Was ok" and 5 more days without a finding |
+| `baseload` | simulated house meter on top of the real plug curves, +35 W without a metering plug after 16 learning days |
+| `runtime` | a device with `max_runtime` runs past its limit and is switched off |
 
-## Fehlersuche
+## Troubleshooting
 
-| Problem | Prüfen |
+| Problem | Check |
 |---|---|
-| Keine Meldungen | `docker logs stromfresser-detektiv`; `sfd_outbox_pending` > 0 heißt, HA nimmt `notify` nicht an. `selbsttest` ausführen. |
-| „meldet keine Werte“ in der Weboberfläche, obwohl die Steckdose geht | Log-Zeile „Lebenszeichen für …“. Fehlt sie, je Gerät `lebenszeichen: sensor.<x>_spannung` eintragen. |
-| Gerät „lernt“ noch lange | Es braucht 14 Tage mit mindestens 80 % Messabdeckung; `status` zeigt den Stand. |
-| Port belegt | `web.port` in `config.yaml` ändern; Prometheus-Ziel anpassen. |
+| No notifications | `docker logs power-hog-detective`. If `sfd_outbox_pending` > 0, HA does not accept `notify`. Run `selftest`. |
+| "No values" in the web UI although the plug works | Look for the log line "Liveness sensor for …". If it is missing, set `liveness: sensor.<x>_voltage` for that device. |
+| A device keeps "learning" | It needs 14 days with at least 80 % coverage; `status` shows where it stands. |
+| Port in use | change `web.port` in `config.yaml` and the Prometheus target. |
 
-## Grenzen
+## Limits
 
-- Ohne Hauszähler sind Hausverbrauch, Netzbezug, nächtliche Grundlast des ganzen Hauses und der Durchlauferhitzer nicht messbar. Die Logik dafür ist fertig und getestet; sie startet, sobald ein Zähler in `haus:` eingetragen ist.
-- Die Durchlauferhitzer-Schätzung erkennt große Lastspitzen, die keiner Steckdose zuzuordnen sind. Mit Zählerwerten im Sekundenbereich ist sie gut, mit 5-Minuten-Werten nur grob.
-- Programm-Erkennung lohnt sich bei Geräten mit wiederkehrenden Programmen. Beim 3D-Drucker ist sie abgeschaltet, weil jeder Druck anders ist.
+- **Without a whole-house meter** the house consumption, grid import, whole-house night base load and the water heater cannot be measured. The logic is complete and tested; it starts once a meter is set under `house:`.
+- **The water-heater estimate** looks for large load peaks that no plug sees. It is good with meter values every few seconds and only rough with 5-minute values.
+- **Program detection** pays off for appliances with recurring programs. For a 3D printer switch it off (`detect_programs: false`), because every print is different.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
